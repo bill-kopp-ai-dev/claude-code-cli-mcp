@@ -1042,6 +1042,132 @@ def prompt_persistence_protocol() -> str:
     )
 
 
+@mcp.prompt(name=prompt_name("quickstart"))
+def prompt_quickstart() -> str:
+    """Cheatsheet for using this MCP server. Read this first if confused.
+
+    Returns the canonical contract: args shape, required CLI binary,
+    tool catalog, and common gotchas. Static, but kept in sync with
+    `claude_self_test` results.
+    """
+    return (
+        f"# {PROVIDER_PREFIX}-code-cli-mcp — Quickstart\n"
+        "\n"
+        "## Args shape (CRITICAL — most bugs come from this)\n"
+        "    run_mcp(args={\"req\": {...}})       # ✓ correct — dict\n"
+        "    run_mcp(args=[{\"req\": {...}}])     # ✗ wrong — list wraps as {\"item\": ...}\n"
+        "    run_mcp(args={})                    # OK after refactor: req is now optional\n"
+        "\n"
+        "## CLI binary required\n"
+        "    claude must be installed and on PATH (Claude Code CLI).\n"
+        "    Verify with claude_health(req={}). For print-mode (-p) runs,\n"
+        "    the user must run `claude login` interactively at least once.\n"
+        "\n"
+        "## Tool catalog (12 tools)\n"
+        "    claude_health                  — ping server + check CLI + auth\n"
+        "    claude_self_test               — schema robustness probe (run first if unsure)\n"
+        "    claude_run_task                — sync execution (supports model + fallback_model)\n"
+        "    claude_start_task / claude_poll_task / claude_cancel_task — async lifecycle\n"
+        "    claude_list_runs               — list active/completed runs\n"
+        "    Persistence (5):\n"
+        "        claude_init_persistence, claude_read_persistence,\n"
+        "        claude_append_persistence, claude_update_persistence,\n"
+        "        claude_load_persistence_context\n"
+        "\n"
+        "## workspace_path for run_task\n"
+        "    Must be inside CLAUDE_MCP_ALLOWED_ROOTS (JSON-array env var).\n"
+        "    Default = Path.cwd() of the server process = the server's project dir.\n"
+        "\n"
+        "## Common gotchas → call troubleshoot prompt with the error string\n"
+        "    Use prompt `claude_troubleshoot` with the exact error message.\n"
+        "\n"
+        "## Restart requirement\n"
+        "    After server-side changes that add new tools/prompts, restart the\n"
+        "    MCP server in the Trae panel so the registry re-discovers them.\n"
+    )
+
+
+@mcp.prompt(name=prompt_name("contract"))
+def prompt_contract() -> str:
+    """Full machine-readable JSON contract of every registered tool.
+
+    Builds the catalog from mcp._local_provider._components so it stays
+    in sync with the actual registered tool schemas. Read this before
+    writing integrations.
+    """
+    tools_dict: dict[str, Any] = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v.parameters if hasattr(v, "parameters") else {}
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    elif hasattr(mcp, "_tool_manager"):
+        tools_dict = getattr(mcp._tool_manager, "_tools", {})
+
+    parts = [f"# {PROVIDER_PREFIX}-code-cli-mcp — Full tool contract\n"]
+    for name, schema in sorted(tools_dict.items()):
+        parts.append(f"## {name}\n")
+        parts.append("```json\n")
+        try:
+            parts.append(json.dumps(schema, indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            parts.append(str(schema))
+        parts.append("\n```\n")
+    return "\n".join(parts)
+
+
+@mcp.prompt(name=prompt_name("troubleshoot"))
+def prompt_troubleshoot(error: str = "") -> str:
+    """Diagnose a specific error string and return the fix recipe.
+
+    Pass the exact error message you received (e.g. \"req: Missing required
+    argument\" or \"workspace_path is outside allowed roots\") and this
+    prompt returns the canonical fix.
+    """
+    err_lc = (error or "").lower()
+    if not err_lc:
+        return (
+            "Pass the exact error message you received as the `error` arg.\n"
+            "Example: prompt `claude_troubleshoot` with error=\"req: Missing required argument\"."
+        )
+    if "missing required argument" in err_lc and "req" in err_lc:
+        return (
+            "BUG: args shape wrong. You're sending args as a list or empty dict.\n"
+            "FIX: pass args={\"req\": {...}} (a dict with the `req` key)."
+        )
+    if "not allowed" in err_lc or "outside allowed roots" in err_lc:
+        return (
+            "BUG: workspace_path is not in the server's allowed roots.\n"
+            "FIX: set CLAUDE_MCP_ALLOWED_ROOTS=[\"/your/path\"] (JSON array) in the\n"
+            "server's env, or pass a workspace_path inside Path.cwd() of the server process."
+        )
+    if "tool is not found" in err_lc or "mcp tool is not found" in err_lc:
+        return (
+            "BUG: Trae MCP registry stale.\n"
+            "FIX: user must restart the MCP server in the Trae panel (not retry the call)."
+        )
+    if "not logged in" in err_lc or "/login" in err_lc or "result.*not logged in" in err_lc:
+        return (
+            "BUG: claude CLI auth not initialized for print mode (-p).\n"
+            "FIX: user must run `claude login` interactively once. After that, the\n"
+            "`claude_health` tool reports logged-in but `claude_run_task` may still fail\n"
+            "if print-mode auth is missing — this is a known cli-side quirk."
+        )
+    if "tolerant_count" in err_lc or "requires_req_count" in err_lc:
+        return (
+            "Schema regression detected. Some tools no longer accept args={}.\n"
+            "FIX: run claude_self_test to enumerate, then check the affected tool's signature."
+        )
+    return (
+        f"No specific recipe for: {error!r}.\n"
+        "General debug steps:\n"
+        "1. Run claude_self_test(req={}) to check server health.\n"
+        "2. Read the `claude_quickstart` prompt.\n"
+        "3. Check the server's stderr for the actual exception."
+    )
+
+
 @mcp.tool(name=tool_name("self_test"))
 def claude_self_test(req: ClaudeSelfTestRequestIn | None = None) -> ClaudeSelfTestResponse:
     """Inspect every registered tool's input schema and report robustness.
