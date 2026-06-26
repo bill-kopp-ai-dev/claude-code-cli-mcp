@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastmcp import FastMCP
+
+_SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 from claude_code_mcp.changes import (
     diff_snapshots, git_changed_files, git_diff, is_git_repo, snapshot_tree,
