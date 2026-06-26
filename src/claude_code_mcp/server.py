@@ -124,7 +124,10 @@ def _resolve_workspace_path(p: str) -> Path:
         raise ValueError("INVALID_WORKSPACE: workspace_path must be an existing directory")
 
     allowed_roots = _settings.resolved_allowed_roots()
-    if not any(str(resolved_path).startswith(str(root) + "/") or resolved_path == root for root in allowed_roots):
+    if not any(
+        str(root) == "/" or resolved_path == root or str(resolved_path).startswith(str(root) + "/")
+        for root in allowed_roots
+    ):
         raise ValueError("NOT_ALLOWED: workspace_path is outside allowed roots")
 
     return resolved_path
