@@ -259,3 +259,31 @@ ClaudeUpdatePersistenceRequestIn = Annotated[
 ClaudeLoadPersistenceContextRequestIn = Annotated[
     ClaudeLoadPersistenceContextRequest, BeforeValidator(_coerce_empty_str_to_dict)
 ]
+
+
+class ClaudeSelfTestRequest(BaseModel):
+    include: list[str] | None = None
+    only_show_tolerant: bool = False
+
+
+ClaudeSelfTestRequestIn = Annotated[
+    ClaudeSelfTestRequest, BeforeValidator(_coerce_empty_str_to_dict)
+]
+
+
+class ClaudeToolSchemaReport(BaseModel):
+    name: str
+    top_level_required: list[str] = Field(default_factory=list)
+    top_level_properties: list[str] = Field(default_factory=list)
+    accepts_empty_args: bool
+    requires_req_wrapper: bool
+
+
+class ClaudeSelfTestResponse(BaseModel):
+    total_tools: int
+    tolerant_count: int
+    requires_req_count: int
+    tools: list[ClaudeToolSchemaReport] = Field(default_factory=list)
+    server_info: dict[str, Any] = Field(default_factory=dict)
+    summary: str
+

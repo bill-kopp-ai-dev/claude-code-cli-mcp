@@ -98,3 +98,33 @@ def test_tool_name_does_not_include_namespace(monkeypatch):
     import claude_code_mcp.provider as provider_mod
     monkeypatch.setattr(provider_mod, "PROVIDER_PREFIX", "x")
     assert provider_mod.tool_name("health") == "x_health"
+
+
+def test_all_tools_tolerate_empty_args():
+    """Confirm every registered tool can be called with no arguments without TypeError."""
+    from claude_code_mcp.server import mcp
+
+    tools_dict = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    else:
+        tool_manager = getattr(mcp, "_tool_manager", None) or getattr(mcp, "_tools", None)
+        if tool_manager is None:
+            raise RuntimeError("Cannot access FastMCP tool manager")
+        if hasattr(tool_manager, "_tools"):
+            tools_dict = tool_manager._tools
+        else:
+            raise RuntimeError(f"Unsupported tool manager: {type(tool_manager)}")
+
+    for name, tool in tools_dict.items():
+        try:
+            tool.fn()
+        except TypeError as e:
+            raise AssertionError(f"Tool {name} failed with TypeError on no-args call: {e}") from e
+        except Exception:
+            pass
+

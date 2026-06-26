@@ -28,19 +28,22 @@ from claude_code_mcp.claude_runner import (
 from claude_code_mcp.claude_stream import ClaudeStreamParser, RollingLineBuffer
 from claude_code_mcp.logfire_setup import setup_logfire
 from claude_code_mcp.models import (
-    ClaudeAppendPersistenceRequestIn, ClaudeAppendPersistenceResponse,
-    ClaudeCancelTaskRequest, ClaudeCancelTaskRequestIn, ClaudeCancelTaskResponse,
-    ClaudeHealthRequest, ClaudeHealthRequestIn, ClaudeHealthResponse,
+    ClaudeAppendPersistenceRequest, ClaudeAppendPersistenceRequestIn,
+    ClaudeAppendPersistenceResponse, ClaudeCancelTaskRequest,
+    ClaudeCancelTaskRequestIn, ClaudeCancelTaskResponse, ClaudeHealthRequest,
+    ClaudeHealthRequestIn, ClaudeHealthResponse, ClaudeInitPersistenceRequest,
     ClaudeInitPersistenceRequestIn, ClaudeInitPersistenceResponse,
     ClaudeListRunsRequest, ClaudeListRunsRequestIn, ClaudeListRunsResponse,
-    ClaudeLoadPersistenceContextRequestIn, ClaudeLoadPersistenceContextResponse,
-    ClaudePollTaskRequest, ClaudePollTaskRequestIn, ClaudePollTaskResponse,
+    ClaudeLoadPersistenceContextRequest, ClaudeLoadPersistenceContextRequestIn,
+    ClaudeLoadPersistenceContextResponse, ClaudePollTaskRequest,
+    ClaudePollTaskRequestIn, ClaudePollTaskResponse, ClaudeReadPersistenceRequest,
     ClaudeReadPersistenceRequestIn, ClaudeReadPersistenceResponse,
     ClaudeRunResult, ClaudeRunSummary, ClaudeRunTaskRequest,
-    ClaudeRunTaskRequestIn, ClaudeRunTaskResponse,
+    ClaudeRunTaskRequestIn, ClaudeRunTaskResponse, ClaudeSelfTestRequest,
+    ClaudeSelfTestRequestIn, ClaudeSelfTestResponse, ClaudeToolSchemaReport,
     ClaudeStartTaskRequest, ClaudeStartTaskRequestIn, ClaudeStartTaskResponse,
-    ClaudeUpdatePersistenceRequestIn, ClaudeUpdatePersistenceResponse,
-    WorkspaceChanges,
+    ClaudeUpdatePersistenceRequest, ClaudeUpdatePersistenceRequestIn,
+    ClaudeUpdatePersistenceResponse, WorkspaceChanges,
 )
 from claude_code_mcp.persistence import PersistenceStore
 from claude_code_mcp.provider import PROVIDER_PREFIX, prompt_name, tool_name
@@ -325,8 +328,18 @@ def _finalize_active_run(active: ActiveRun) -> None:
 # MCP Tools
 
 @mcp.tool(name=tool_name("health"))
-def claude_health(req: ClaudeHealthRequestIn) -> ClaudeHealthResponse:
-    """Health check for the Claude Code CLI binary."""
+def claude_health(req: ClaudeHealthRequestIn | None = None) -> ClaudeHealthResponse:
+    """Health check for the Claude Code CLI binary.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeHealthRequest()
     try:
         claude_path = _resolve_claude_path()
         version = subprocess.check_output([claude_path, "--version"], text=True).strip()
@@ -350,8 +363,18 @@ def claude_health(req: ClaudeHealthRequestIn) -> ClaudeHealthResponse:
 
 
 @mcp.tool(name=tool_name("run_task"))
-def claude_run_task(req: ClaudeRunTaskRequestIn) -> ClaudeRunTaskResponse:
-    """Run a single Claude task synchronously."""
+def claude_run_task(req: ClaudeRunTaskRequestIn | None = None) -> ClaudeRunTaskResponse:
+    """Run a single Claude task synchronously.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeRunTaskRequest()
     workspace = _resolve_workspace_path(req.workspace_path)
     _validate_exec_options(req)
 
@@ -459,8 +482,18 @@ def claude_run_task(req: ClaudeRunTaskRequestIn) -> ClaudeRunTaskResponse:
 
 
 @mcp.tool(name=tool_name("start_task"))
-def claude_start_task(req: ClaudeStartTaskRequestIn) -> ClaudeStartTaskResponse:
-    """Start a Claude Code CLI task asynchronously."""
+def claude_start_task(req: ClaudeStartTaskRequestIn | None = None) -> ClaudeStartTaskResponse:
+    """Start a Claude Code CLI task asynchronously.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeStartTaskRequest()
     with _active_runs_lock:
         if len(_active_runs) >= _settings.max_concurrent_runs:
             raise RuntimeError(
@@ -539,8 +572,18 @@ def claude_start_task(req: ClaudeStartTaskRequestIn) -> ClaudeStartTaskResponse:
 
 
 @mcp.tool(name=tool_name("poll_task"))
-def claude_poll_task(req: ClaudePollTaskRequestIn) -> ClaudePollTaskResponse:
-    """Poll an asynchronous task."""
+def claude_poll_task(req: ClaudePollTaskRequestIn | None = None) -> ClaudePollTaskResponse:
+    """Poll an asynchronous task.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudePollTaskRequest()
     import time
 
     if req.drain:
@@ -598,8 +641,18 @@ def claude_poll_task(req: ClaudePollTaskRequestIn) -> ClaudePollTaskResponse:
 
 
 @mcp.tool(name=tool_name("cancel_task"))
-def claude_cancel_task(req: ClaudeCancelTaskRequestIn) -> ClaudeCancelTaskResponse:
-    """Cancel a running task."""
+def claude_cancel_task(req: ClaudeCancelTaskRequestIn | None = None) -> ClaudeCancelTaskResponse:
+    """Cancel a running task.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeCancelTaskRequest()
     with _active_runs_lock:
         active = _active_runs.get(req.run_id)
 
@@ -616,8 +669,18 @@ def claude_cancel_task(req: ClaudeCancelTaskRequestIn) -> ClaudeCancelTaskRespon
 
 
 @mcp.tool(name=tool_name("list_runs"))
-def claude_list_runs(req: ClaudeListRunsRequestIn) -> ClaudeListRunsResponse:
-    """List recent runs."""
+def claude_list_runs(req: ClaudeListRunsRequestIn | None = None) -> ClaudeListRunsResponse:
+    """List recent runs.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeListRunsRequest()
     runs: list[ClaudeRunSummary] = []
 
     with _active_runs_lock:
@@ -653,8 +716,18 @@ def claude_list_runs(req: ClaudeListRunsRequestIn) -> ClaudeListRunsResponse:
 # Persistence tools
 
 @mcp.tool(name=tool_name("init_persistence"))
-def claude_init_persistence(req: ClaudeInitPersistenceRequestIn) -> ClaudeInitPersistenceResponse:
-    """Initialize the persistence directory and seed the three markdown files."""
+def claude_init_persistence(req: ClaudeInitPersistenceRequestIn | None = None) -> ClaudeInitPersistenceResponse:
+    """Initialize the persistence directory and seed the three markdown files.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeInitPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError("PERSISTENCE_DISABLED: persistence is disabled via settings")
 
@@ -668,8 +741,18 @@ def claude_init_persistence(req: ClaudeInitPersistenceRequestIn) -> ClaudeInitPe
 
 
 @mcp.tool(name=tool_name("read_persistence"))
-def claude_read_persistence(req: ClaudeReadPersistenceRequestIn) -> ClaudeReadPersistenceResponse:
-    """Read one of the three persistence files."""
+def claude_read_persistence(req: ClaudeReadPersistenceRequestIn | None = None) -> ClaudeReadPersistenceResponse:
+    """Read one of the three persistence files.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeReadPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError("PERSISTENCE_DISABLED: persistence is disabled via settings")
 
@@ -684,8 +767,18 @@ def claude_read_persistence(req: ClaudeReadPersistenceRequestIn) -> ClaudeReadPe
 
 
 @mcp.tool(name=tool_name("append_persistence"))
-def claude_append_persistence(req: ClaudeAppendPersistenceRequestIn) -> ClaudeAppendPersistenceResponse:
-    """Append content to one of the persistence files."""
+def claude_append_persistence(req: ClaudeAppendPersistenceRequestIn | None = None) -> ClaudeAppendPersistenceResponse:
+    """Append content to one of the persistence files.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeAppendPersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError("PERSISTENCE_DISABLED: persistence is disabled via settings")
 
@@ -702,8 +795,18 @@ def claude_append_persistence(req: ClaudeAppendPersistenceRequestIn) -> ClaudeAp
 
 
 @mcp.tool(name=tool_name("update_persistence"))
-def claude_update_persistence(req: ClaudeUpdatePersistenceRequestIn) -> ClaudeUpdatePersistenceResponse:
-    """Replace or append to a section in one of the persistence files."""
+def claude_update_persistence(req: ClaudeUpdatePersistenceRequestIn | None = None) -> ClaudeUpdatePersistenceResponse:
+    """Replace or append to a section in one of the persistence files.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeUpdatePersistenceRequest()
     if not _settings.persistence_enabled:
         raise ValueError("PERSISTENCE_DISABLED: persistence is disabled via settings")
 
@@ -725,8 +828,18 @@ def claude_update_persistence(req: ClaudeUpdatePersistenceRequestIn) -> ClaudeUp
 
 
 @mcp.tool(name=tool_name("load_persistence_context"))
-def claude_load_persistence_context(req: ClaudeLoadPersistenceContextRequestIn) -> ClaudeLoadPersistenceContextResponse:
-    """Load the persistence files as context for the current session."""
+def claude_load_persistence_context(req: ClaudeLoadPersistenceContextRequestIn | None = None) -> ClaudeLoadPersistenceContextResponse:
+    """Load the persistence files as context for the current session.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"field1": value1, "field2": value2, ...}}`
+        For backwards-compatibility, the server also accepts `args={}` for
+        tools whose request model has all-optional fields; required-field
+        errors surface as Pydantic ValidationError.
+    """
+    if req is None:
+        req = ClaudeLoadPersistenceContextRequest()
     if not _settings.persistence_enabled:
         raise ValueError("PERSISTENCE_DISABLED: persistence is disabled via settings")
 
@@ -926,6 +1039,81 @@ def prompt_persistence_protocol() -> str:
         "\n"
         "Do not store secrets, credentials, or full file dumps in "
         "MEMORY.md — keep entries small and high-signal.\n"
+    )
+
+
+@mcp.tool(name=tool_name("self_test"))
+def claude_self_test(req: ClaudeSelfTestRequestIn | None = None) -> ClaudeSelfTestResponse:
+    """Inspect every registered tool's input schema and report robustness.
+
+    This is a metadata-only check — no tools are actually invoked.
+
+    Args shape:
+        The MCP client MUST pass arguments wrapped in a `req` object:
+            `{"req": {"include": ["claude_health"], "only_show_tolerant": true}}`
+        For backwards-compatibility, the server also accepts `args={}`.
+    """
+    if req is None:
+        req = ClaudeSelfTestRequest()
+    
+    tools_dict = {}
+    if hasattr(mcp, "_local_provider") and hasattr(mcp._local_provider, "_components"):
+        tools_dict = {
+            v.name: v
+            for k, v in mcp._local_provider._components.items()
+            if k.startswith("tool:")
+        }
+    else:
+        tool_manager = getattr(mcp, "_tool_manager", None) or getattr(mcp, "_tools", None)
+        if tool_manager is None:
+            raise RuntimeError("Cannot access FastMCP tool manager")
+        if hasattr(tool_manager, "_tools"):
+            tools_dict = tool_manager._tools
+        else:
+            raise RuntimeError(f"Unsupported tool manager: {type(tool_manager)}")
+    
+    reports: list[ClaudeToolSchemaReport] = []
+    for name, tool in tools_dict.items():
+        if hasattr(tool, "parameters"):
+            schema = tool.parameters
+        elif hasattr(tool, "input_schema"):
+            schema = tool.input_schema
+        else:
+            import inspect
+            sig = inspect.signature(tool)
+            params = [p for p in sig.parameters.values() if p.name != "self"]
+            schema = {
+                "required": [p.name for p in params if p.default is inspect.Parameter.empty],
+                "properties": {p.name: {"type": "object"} for p in params},
+            }
+        
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        properties = list(schema.get("properties", {}).keys()) if isinstance(schema, dict) else []
+        
+        if req.include is not None:
+            if not any(name.startswith(p) for p in req.include):
+                continue
+        if req.only_show_tolerant and required:
+            continue
+        
+        reports.append(ClaudeToolSchemaReport(
+            name=name,
+            top_level_required=required,
+            top_level_properties=properties,
+            accepts_empty_args=len(required) == 0,
+            requires_req_wrapper="req" in required,
+        ))
+    
+    tolerant = sum(1 for r in reports if r.accepts_empty_args)
+    requires_req = sum(1 for r in reports if r.requires_req_wrapper)
+    
+    return ClaudeSelfTestResponse(
+        total_tools=len(reports),
+        tolerant_count=tolerant,
+        requires_req_count=requires_req,
+        tools=reports,
+        server_info={"name": "claude-code-cli-mcp", "version": "3.4.2"},
+        summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
     )
 
 
