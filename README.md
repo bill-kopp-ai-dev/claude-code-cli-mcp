@@ -50,6 +50,38 @@ Now you can leverage your Claude Pro/Team subscription or `ANTHROPIC_API_KEY` se
 - `claude_security_and_workspace_rules`: Summarizes sandbox limits and rules for safe and permissive environments.
 - `claude_persistence_protocol`: Guides the orchestrator on maintaining the persistent memory files.
 
+## Companion Agent: Femtobot
+
+> **Recommendation:** this server is the canonical `claude_*` tool source for
+> [`femtobot`](https://github.com/bill-kopp-ai-dev/femtobot), the
+> CLI-first AI agent foundation in the percival.OS ecosystem.
+
+Femtobot ships **first-class support** for the tools exposed here:
+
+- **`/mcp` slash command** — `status`, `reload`,
+  `tools claude-code-cli-mcp`, `restart claude-code-cli-mcp` for
+  runtime inspection and recovery without restarting the agent.
+- **`mcp-router` builtin skill** — teaches the LLM when to delegate to
+  `claude_run_task` vs. solving locally with `read_file`,
+  `apply_patch`, etc.
+- **Capability tags** — tool hints show
+  `[long-running, safe-mode:confirm]` so the model recognizes the
+  `confirm` gate before invoking `claude_run_task`.
+- **Workspace auto-fill** — `claude_run_task` calls get
+  `workspace_path` filled in automatically from the active request
+  context.
+- **System-prompt block** — `## MCP Servers in this workspace` lists
+  this server and its tools so the model sees them at planning time.
+- **`CLAUDE_MCP_PERSISTENCE_LOCATION=workspace`** is auto-resolved by
+  femtobot to `<cwd_parent>/.open-cli-router/claude-code-cli-mcp/`, so
+  persistence files (`AGENTS.md`, `MEMORY.md`, `PROJECTS.md`) end up
+  inside your project when configured that way.
+
+See [`femtobot/docs/mcp.md`](https://github.com/bill-kopp-ai-dev/femtobot/blob/main/docs/mcp.md)
+§8 "Femtobot-specific patterns" for the full integration reference, and
+the [CLI-router-project analysis](../../blob/main/FEMTOBOT_MCP_INTEGRATION_ANALYSIS.md)
+for the design rationale.
+
 ## Persistent Memory
 
 This MCP server features a file-based persistence layer stored by default under `~/.open-cli-router/claude-code/`. The directory contains three editable markdown files:
