@@ -60,6 +60,27 @@ This MCP server features a file-based persistence layer stored by default under 
 
 When persistence is enabled, the server automatically loads these files and prepends their formatted excerpts to the prompt sent to the `claude` CLI, ensuring cross-session state persistence.
 
+### Storage location: global vs workspace
+
+The persistence directory can live in **two places**, controlled by
+`CLAUDE_MCP_PERSISTENCE_LOCATION`:
+
+| Mode | Location | Use case |
+|------|----------|----------|
+| `global` (default) | `~/.open-cli-router/claude-code/` | User-level, persists across projects, survives `cd` |
+| `workspace` | `<cwd_parent>/.open-cli-router/claude-code/` | Project-level, can be committed (use `.gitignore`!), portable with the repo |
+
+`<cwd_parent>` is the parent of the server's CWD — for a typical setup,
+the server's CWD is the server project directory (e.g.
+`/home/user/CLI-router-project/claude-code-cli-mcp`), so the workspace
+mode resolves to `/home/user/CLI-router-project/.open-cli-router/claude-code/`.
+
+**Escape hatch:** `CLAUDE_MCP_PERSISTENCE_BASE_DIR="$cwd_parent/.my-persistence"` lets
+you pick any custom subdirectory under the workspace root.
+
+> ⚠️ When using `workspace` mode, add `.open-cli-router/` to `.gitignore`
+> to avoid accidentally committing agent memory to source control.
+
 ### Two-level configuration
 
 Persistence is controlled by **both** server-level environment variables and runtime MCP tool calls:
@@ -69,17 +90,20 @@ Persistence is controlled by **both** server-level environment variables and run
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `CLAUDE_MCP_PERSISTENCE_ENABLED` | Master switch for the persistence feature | `true` |
-| `CLAUDE_MCP_PERSISTENCE_BASE_DIR` | Base directory; the namespace `claude-code` is appended automatically | `~/.open-cli-router` |
-| `CLAUDE_MCP_PERSISTENCE_MAX_FILE_BYTES` | Maximum size per file before writes are rejected | `1048576` (1 MiB) |
+| `CLAUDE_MCP_PERSISTENCE_LOCATION` | `"global"` (in `~`) or `"workspace"` (in `<cwd_parent>/.open-cli-router/`) | `global` |
+| `CLAUDE_MCP_PERSISTENCE_BASE_DIR` | Base directory; the namespace `claude-code` is appended automatically. Supports `$cwd_parent` token for custom workspace paths. | `~/.open-cli-router` |
+| `CLAUDE_MCP_PERSISTENCE_MAX_FILE_BYTES` | Maximum size per file before writes are rejected | `524288` (512 KiB; aligned with agy in Phase 5) |
 | `CLAUDE_MCP_PERSISTENCE_BACKUP_ON_WRITE` | Create `.bak` before each modification | `false` |
+| `CLAUDE_MCP_PERSISTENCE_BACKUP_KEEP` | Number of `.bak` files to retain per source file (rotation) | `10` |
 | `CLAUDE_MCP_PERSISTENCE_SEED_TEMPLATES` | Seed default markdown content when initializing | `true` |
+| `CLAUDE_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO` | Fraction of `max_chars_per_file` preserved at head (rest is tail). Lower = more recency. | `0.2` (20% head / 80% tail) |
 
 **Runtime level** (called by the orchestrator via MCP tools):
 
-1. **Initialize once** — call `claude_init_persistence` to create `~/.open-cli-router/claude-code/` and seed the three files.
+1. **Initialize once** — call `claude_init_persistence` to create the directory and seed the three files.
 2. **Load context** — call `claude_load_persistence_context` at the start of each session to inject excerpts into the next prompt.
 3. **Append session notes** — after meaningful work, call `claude_append_persistence` on `MEMORY.md`.
-4. **Update structured sections** — when the user changes `AGENTS.md` or `PROJECTS.md`, call `claude_update_persistence` to persist.
+4. **Update structured sections** — when the user changes `AGENTS.md` or `PROJECTS.md`, call `claude_update_persistence` to persist. **Note:** updating `AGENTS.md` in safe mode requires `confirm=true`.
 
 Without step 1, persistence is **enabled but uninitialized** — the server will not inject any context until the directory exists.
 
@@ -102,7 +126,7 @@ The tool seeds `AGENTS.md`, `PROJECTS.md`, `MEMORY.md`, and a `.initialized` mar
 From the project root (`claude-code-cli-mcp/`):
 
 ```bash
-uv run python -c "from claude_code_mcp.persistence import PersistenceStore; from pathlib import Path; PersistenceStore(base_dir=Path.home()/'.open-cli-router', max_file_bytes=1048576, backup_on_write=False, seed_templates=True).init()"
+uv run python -c "from claude_code_mcp.persistence import PersistenceStore; from pathlib import Path; PersistenceStore(base_dir=Path.home()/'.open-cli-router', max_file_bytes=524288, backup_on_write=False, seed_templates=True).init()"
 ```
 
 This call is idempotent — running it twice does not destroy existing data unless you pass `force=True`.

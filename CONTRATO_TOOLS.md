@@ -178,10 +178,12 @@ Notes:
 
 Input: `ClaudeUpdatePersistenceRequest`
 - `file: "agents" | "projects" | "memory"`
-- `section_anchor: str` (the exact heading title without the `## ` prefix)
+- `section_anchor: str` — heading text without the `## ` prefix
+  (matching is case-insensitive and strips leading `#` and whitespace)
 - `new_content: str`
 - `mode: "replace" | "append"` (default: "replace")
-- `confirm: bool` (default: False)
+- `confirm: bool` (default: False) — required `True` to update `AGENTS.md`
+  in safe mode (parity with `agy-mcp-server`).
 
 Output: `ClaudeUpdatePersistenceResponse`
 - `file: str`
@@ -198,6 +200,13 @@ Input: `ClaudeLoadPersistenceContextRequest`
 - `include: list["agents" | "projects" | "memory"]` (default: ["agents", "projects", "memory"])
 - `max_chars_per_file: int` (default: 20000)
 
+Truncation strategy (Phase 2, C4):
+- Default is **asymmetric**: 20% head + 80% tail (configurable via
+  `CLAUDE_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO`). This favors recency
+  over ancient history.
+- The marker between head and tail includes the number of chars
+  omitted: `[truncated N chars]`.
+
 Output: `ClaudeLoadPersistenceContextResponse`
 - `agents_excerpt: str | None`
 - `projects_excerpt: str | None`
@@ -206,6 +215,24 @@ Output: `ClaudeLoadPersistenceContextResponse`
 - `total_chars: int`
 - `base_dir: str`
 - `initialized: bool`
+
+Persistence settings (env vars, all `CLAUDE_MCP_PERSISTENCE_*`):
+- `CLAUDE_MCP_PERSISTENCE_ENABLED` (default `true`)
+- `CLAUDE_MCP_PERSISTENCE_LOCATION` (default `global`) — `"global"` or
+  `"workspace"`. When `"workspace"`, files live in
+  `<cwd_parent>/.open-cli-router/claude-code/` instead of
+  `~/.open-cli-router/claude-code/`.
+- `CLAUDE_MCP_PERSISTENCE_BASE_DIR` (default `~/.open-cli-router`) —
+  accepts the special token `$cwd_parent` (parent of the server's CWD)
+  for custom paths, e.g. `$cwd_parent/.my-persistence`.
+- `CLAUDE_MCP_PERSISTENCE_MAX_FILE_BYTES` (default `524288` / 512 KiB;
+  Phase 5 alignment with agy)
+- `CLAUDE_MCP_PERSISTENCE_BACKUP_ON_WRITE` (default `false`)
+- `CLAUDE_MCP_PERSISTENCE_BACKUP_KEEP` (default `10`) — number of
+  `.bak` files to retain per source file (Phase 2, C3).
+- `CLAUDE_MCP_PERSISTENCE_SEED_TEMPLATES` (default `true`)
+- `CLAUDE_MCP_PERSISTENCE_TRUNCATION_HEAD_RATIO` (default `0.2`) —
+  fraction of `max_chars_per_file` preserved at the head (Phase 2, C4).
 
 ---
 

@@ -29,7 +29,7 @@ reasoning backend via this MCP.
    load persistent context.
 2. After each meaningful session/task, call
    `{provider}_append_persistence(file="memory", ...)` with a short summary.
-3. Never expose the contents of `~/.open-cli-router/{provider}/` in logs.
+3. Never expose the contents of `~/.open-cli-router/{namespace}/` in logs.
 4. Do not store secrets or credentials in `MEMORY.md`.
 
 ## Security
@@ -58,7 +58,17 @@ MEMORY_TEMPLATE = """# Memory
 
 
 def render_agents_template(provider: str) -> str:
-    return AGENTS_TEMPLATE.format(provider=provider)
+    """Render the AGENTS.md seed template.
+
+    Uses ``PERSISTENCE_NAMESPACE`` (the actual on-disk directory name)
+    rather than ``PROVIDER_PREFIX`` (the MCP wire-format prefix). For
+    claude these differ (``"claude-code"`` vs ``"claude"``); referencing
+    the namespace ensures the AGENTS.md file points the agent at the
+    real path and avoids teaching it to leak the real directory.
+    """
+    from claude_code_mcp.provider import PERSISTENCE_NAMESPACE
+
+    return AGENTS_TEMPLATE.format(provider=provider, namespace=PERSISTENCE_NAMESPACE)
 
 
 def render_projects_template(provider: str) -> str:

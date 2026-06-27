@@ -626,4 +626,98 @@ Phase 7 é **nova** em relação ao v3 e adiciona ~1 dia ao cronograma
 4. Phase 2-4: módulos novos
 5. Phase 5-6: tools e prompts de execução
 6. Phase 7: persistência (fork do pacote + integração em `claude_run_task`)
+
+---
+
+## 21. Refatoração 2026-06 (changelog)
+
+Esta refatoração endereçou **1 bug crítico** e propagou para o `claude-code-cli-mcp` todas as melhorias implementadas no `agy-mcp-server`. Executada em 7 fases, todas entregues.
+
+### Phase 1 — Bug crítico (A1): template AGENTS.md apontava para path errado
+
+- **Sintoma:** `AGENTS.md` seed continha `~/.open-cli-router/{provider}/` que era renderizado com `PROVIDER_PREFIX="claude"`, gerando `~/.open-cli-router/claude/` — diretório que **não existe** (o real é `claude-code/`).
+- **Risco:** instruía o agente a "nunca expor" um path incorreto, deixando o path real (`claude-code/`) sem proteção.
+- **Correção:** template usa agora `{namespace}` resolvido por `PERSISTENCE_NAMESPACE="claude-code"`.
+- 2 testes novos em `test_persistence.py`.
+
+### Phase 2 — Robustez do store (C1-C5)
+
+Idêntica à do agy:
+- **C1** Normalização de `section_header` (regex `^[#\s]+`) + dedup case-insensitive.
+- **C2** Match case-insensitive em `_replace_section`.
+- **C3** Backup rotation (`backup_keep: int = 10`).
+- **C4** Truncamento assimétrico (`head_ratio: float = 0.2`, default 80% tail).
+- **C5** Fix `read()` truncated flag.
+- 17 testes novos.
+
+### Phase 3 — Refatoração de integração
+
+- Novo módulo [persistence/context.py](file:///home/bill/Codes/CLI-router-project/claude-code-cli-mcp/src/claude_code_mcp/persistence/context.py) com `build_prompt_with_context()` (Protocol-based).
+- `_build_prompt_with_context` no `server.py` agora é wrapper fino (compatibilidade).
+- 12 testes novos em `test_persistence_context.py`.
+
+### Phase 4 — Feature nova: `persistence_location`
+
+- Setting novo `persistence_location: Literal["global", "workspace"] = "global"`.
+- Settings da Fase 3 do agy integrados: `backup_keep=10`, `truncation_head_ratio=0.2`.
+- Método novo `Settings.resolve_persistence_base_dir()` com 3 modos: `$cwd_parent` token > workspace > global.
+- Bootstrap do `server.py` chama `_settings.resolve_persistence_base_dir()` e propaga settings da Fase 2.
+- `prompt_persistence_protocol` agora inclui nota sobre `persistence_location` + warning sobre `.gitignore`.
+- 19 testes novos em `test_persistence_location.py`.
+
+### Phase 5 — Padronização de settings com agy (B2)
+
+- `persistence_max_file_bytes` mudou de `1_048_576` (1 MiB) para `524_288` (512 KiB) — alinhado com agy.
+- `.env.example` documenta a mudança com comentário.
+- 1 teste novo: `test_default_max_file_bytes_is_512kib`.
+
+### Phase 6 — Testes de integração (gap §4 do diagnóstico)
+
+- 14 testes novos em `test_persistence_integration.py` cobrindo:
+  - `claude_persistence_protocol` registrado em `mcp.list_prompts()`.
+  - Helper `build_prompt_with_context` testado diretamente (cenário `claude_run_task` é complexo de mockar; ver skip em `test_run_task_prepends_persistent_context`).
+  - Helper tolerante a `RuntimeError`/`OSError`.
+  - Helper pula contexto se `persistence_enabled=False` ou `is_initialized=False`.
+  - `load_context().initialized` reflete o marker.
+  - Symlink escape bloqueado por `resolve_file_path`.
+  - `load_context` respeita `max_chars_per_file`.
+
+### Phase 7 — Documentação
+
+- `CONTRATO_TOOLS.md`: documentação de `confirm`, truncation assimétrica, novos env vars, mudança em `MAX_FILE_BYTES`.
+- `README.md`: nova seção "Storage location: global vs workspace" com tabela, warning sobre `.gitignore`, atualização dos defaults (incluindo `MAX_FILE_BYTES` → 512 KiB).
+- `USO_TRAE.md`: nova subseção 4.1 com exemplo de config Trae para workspace mode + nota sobre escape hatch.
+- `PLAN.md`: este §21 (changelog).
+- `.env.example`: documenta todas as variáveis novas com exemplos comentados.
+- **Migração automática:** **não incluída**. Usuário que muda de `global` para `workspace` deve mover manualmente os arquivos:
+  ```bash
+  mv ~/.open-cli-router/claude-code <cwd_parent>/.open-cli-router/claude-code
+  ```
+- **⚠️ Migração manual recomendada para o bug A1:** usuários com `AGENTS.md` já inicializado devem rodar `claude_init_persistence(req={"force": true})` para regenerar o template com o path correto, OU editar manualmente a linha 3 do `AGENTS.md`.
+
+### Métricas finais
+
+| Métrica | Antes | Depois |
+|---|---|---|
+| Testes em `test_persistence*.py` | 26 | 73 |
+| Total de testes | 72 | 137 (136 + 1 skip) |
+| Bugs em runtime | 1 (A1: path errado) | 0 |
+| Divergências com agy pós-refatoração | 5 | 0 (parity total) |
+| Features de persistência | location=global | +location=workspace, +`$cwd_parent` escape hatch |
+
+**Compatibilidade:** zero impacto em setups existentes — todos os settings novos têm defaults que reproduzem o comportamento anterior. Apenas o default de `MAX_FILE_BYTES` mudou (1 MiB → 512 KiB) — usuários que tinham valor customizado em `.env` continuam com ele.
+
+### Pendente (deferido para v2)
+
+- D1 Dream cycle / Consolidator
+- D2 Versionamento Git automático
+- D3 `claude_search_persistence`
+- D4 Export/import tool
+- D5 Métricas em `claude_status`
+- D6 `render_session_entry` helper
+- C6 Lock per-file
+- C7 Cross-MCP awareness
+- Migration tool automática `global` ↔ `workspace`
+- Reparo automático de `AGENTS.md` para usuários existentes (forçar re-seed)
+- Abstração de `persistence.py` em pacote compartilhado entre agy e claude
 7. Phase 8-10: testes, docs, validação

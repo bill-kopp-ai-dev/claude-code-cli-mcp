@@ -133,6 +133,41 @@ Ordem de precedência das configurações:
 2. Variáveis de ambiente definidas no arquivo `.env` do servidor.
 3. Valores padrão embutidos no código.
 
+### 4.1) Localização da Persistência: Global vs Workspace
+
+A camada de persistência pode viver em **dois locais**, controlados por `CLAUDE_MCP_PERSISTENCE_LOCATION`:
+
+| Modo | Path resolvido (setup típico) | Caso de uso |
+|------|-------------------------------|-------------|
+| `global` (default) | `~/.open-cli-router/claude-code/` | Nível de usuário, sobrevive a `cd`, não atrelado a projeto |
+| `workspace` | `<cwd_parent>/.open-cli-router/claude-code/` | Nível de projeto, portável, pode ser commitado (use `.gitignore`!) |
+
+`<cwd_parent>` é o pai do CWD do servidor. Para a config acima onde `cwd` é `/caminho/para/claude-code-cli-mcp`, `cwd_parent` é `/caminho/para` (raiz do workspace).
+
+**Exemplo — modo workspace na config do Trae:**
+
+```jsonc
+{
+  "mcpServers": {
+    "claude-code-cli-mcp": {
+      "command": "uvx",
+      "args": [...],
+      "cwd": "/caminho/para/claude-code-cli-mcp",
+      "env": {
+        "CLAUDE_MCP_PERSISTENCE_ENABLED": "true",
+        "CLAUDE_MCP_PERSISTENCE_LOCATION": "workspace"
+        // Path customizado opcional (sobrescreve LOCATION):
+        // "CLAUDE_MCP_PERSISTENCE_BASE_DIR": "$cwd_parent/.my-persistence"
+      }
+    }
+  }
+}
+```
+
+Com o snippet acima, os arquivos de persistência ficam em `/caminho/para/.open-cli-router/claude-code/`. Lembre-se de adicionar `.open-cli-router/` ao `.gitignore` se seu workspace for um repositório git.
+
+**Escape hatch:** `CLAUDE_MCP_PERSISTENCE_BASE_DIR="$cwd_parent/custom"` aceita qualquer subdiretório customizado sob a raiz do workspace, independente do `LOCATION`.
+
 ## 5) Exemplos de Chamadas
 
 ### 5.1 Health Check (Verificação de Saúde)
