@@ -21,7 +21,12 @@ def build_claude_argv(
     if settings.force_default_permission_mode:
         permission_mode = settings.default_permission_mode
     else:
-        permission_mode = request.permission_mode or settings.default_permission_mode
+        if request.permission_mode is not None:
+            permission_mode = request.permission_mode
+        elif settings.mode == "permissive" and settings.default_permission_mode == "acceptEdits":
+            permission_mode = "bypassPermissions"
+        else:
+            permission_mode = settings.default_permission_mode
 
     # 2. Safe-mode and permissive-mode checks (Validation order: safe-mode checks first)
     if settings.mode == "safe":
@@ -31,18 +36,6 @@ def build_claude_argv(
             raise ValueError("NOT_ALLOWED: bypassPermissions requires permissive mode")
         if permission_mode == "dontAsk" or request.permission_mode == "dontAsk":
             raise ValueError("PERMISSION_MODE_NOT_ALLOWED: dontAsk is not allowed in safe mode")
-
-    if settings.mode == "permissive":
-        if (
-            permission_mode == "bypassPermissions"
-            or request.permission_mode == "bypassPermissions"
-            or request.options.dangerously_skip_permissions
-        ):
-            if "--dangerously-skip-permissions" not in (settings.allow_extra_args or set()):
-                raise ValueError(
-                    "PERMISSION_MODE_NOT_ALLOWED: bypassPermissions/dangerously_skip_permissions requires "
-                    "'--dangerously-skip-permissions' to be allowed in allow_extra_args"
-                )
 
     if permission_mode == "auto" or request.permission_mode == "auto":
         raise ValueError("PERMISSION_MODE_NOT_ALLOWED: auto permission mode is not allowed")
@@ -63,12 +56,14 @@ def build_claude_argv(
         argv.append("--bare")
 
     argv.extend(["--add-dir", workspace_path])
-    argv.extend(["--permission-mode", permission_mode])
+
+    if permission_mode == "bypassPermissions" or request.options.dangerously_skip_permissions:
+        argv.append("--dangerously-skip-permissions")
+    else:
+        argv.extend(["--permission-mode", permission_mode])
 
     if mode == "sync":
         argv.extend(["--output-format", "json", "--no-session-persistence"])
-        if request.options.dangerously_skip_permissions:
-            argv.append("--dangerously-skip-permissions")
     elif mode == "async":
         argv.extend(["--output-format", "stream-json", "--verbose", "--include-partial-messages"])
         if session_id:
