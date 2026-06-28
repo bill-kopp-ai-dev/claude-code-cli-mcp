@@ -161,7 +161,10 @@ def _validate_exec_options(req: Any) -> None:
             raise ValueError("NOT_ALLOWED: extra_args is not allowed in safe mode")
 
     if req.options.extra_args:
-        unknown = [a for a in req.options.extra_args if a not in _settings.allow_extra_args]
+        allowed_extra = _settings.allow_extra_args or set()
+        if _settings.mode == "permissive":
+            allowed_extra = allowed_extra | {"--dangerously-skip-permissions"}
+        unknown = [a for a in req.options.extra_args if a not in allowed_extra]
         if unknown:
             raise ValueError("NOT_ALLOWED: extra_args contains disallowed entries")
 
