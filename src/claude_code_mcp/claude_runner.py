@@ -70,8 +70,10 @@ def start_sync_run(
             proc.stdin.write(request.prompt)
             proc.stdin.flush()
             proc.stdin.close()
-        except Exception:
+        except (BrokenPipeError, ValueError):
             pass
+        finally:
+            proc.stdin = None
 
     return ClaudeRun(
         run_id=run_id,
@@ -129,8 +131,10 @@ def start_async_run(
             proc.stdin.write(request.prompt)
             proc.stdin.flush()
             proc.stdin.close()
-        except Exception:
+        except (BrokenPipeError, ValueError):
             pass
+        finally:
+            proc.stdin = None
 
     parser = ClaudeStreamParser()
 

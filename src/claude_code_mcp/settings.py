@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     )
 
     # ---- Hardening ----
-    force_bare: bool = True
+    force_bare: bool = False
     force_sandbox_in_safe_mode: bool = True
     default_permission_mode: str = "acceptEdits"
     force_default_permission_mode: bool = False  # if True, ignore request permission_mode and use default
