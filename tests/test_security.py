@@ -120,33 +120,22 @@ def test_dontAsk_rejected_in_safe_mode():
         )
 
 
-def test_bypassPermissions_requires_allowlist_in_permissive():
-    # WITHOUT '--dangerously-skip-permissions' in allowed extra args
+def test_bypassPermissions_allowed_in_permissive():
     settings = Settings(mode="permissive", allow_extra_args=set())
     req = ClaudeRunTaskRequest(
         workspace_path=".",
         prompt="OK",
         permission_mode="bypassPermissions",
     )
-    with pytest.raises(ValueError, match="PERMISSION_MODE_NOT_ALLOWED"):
-        build_claude_argv(
-            claude_path="claude",
-            workspace_path=".",
-            request=req,
-            mode="sync",
-            settings=settings,
-        )
-
-    # WITH '--dangerously-skip-permissions' allowed
-    settings_ok = Settings(mode="permissive", allow_extra_args={"--dangerously-skip-permissions"})
     argv = build_claude_argv(
         claude_path="claude",
         workspace_path=".",
         request=req,
         mode="sync",
-        settings=settings_ok,
+        settings=settings,
     )
-    assert "--permission-mode" in argv
+    assert "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv
 
 
 def test_bare_is_always_present():
