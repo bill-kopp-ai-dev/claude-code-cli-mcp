@@ -68,8 +68,23 @@ If `claude_run_task` returns a `parse_error` or hangs past
 `timeout_s`, the subprocess may still be running. Recovery:
 
 1. `claude_list_runs(req={limit: 5})` to find the run_id
-2. `claude_poll_task(req={run_id, drain: true, wait_seconds: 30})` to drain output
-3. `claude_cancel_task(req={run_id})` if it must be stopped
+2. `claude_poll_task(req={run_id, drain: false, wait_seconds: 1})` for quick state check
+3. `claude_poll_task(req={run_id, drain: true, wait_seconds: 30})` if you want to wait for natural completion
+4. `claude_cancel_task(req={run_id, force: false})` to stop (SIGTERM, 5s grace)
+5. `claude_cancel_task(req={run_id, force: true})` to force-stop (SIGKILL)
 
 For long-running tasks, ALWAYS use `claude_start_task` (async) to
 avoid the parse_error-on-timeout failure mode.
+
+## Auth failure on first run ("Not logged in")
+
+The most common cause is the server passing `--bare` to the
+subprocess. `--bare` bypasses `~/.claude/` entirely, so the OAuth token
+in `~/.claude.json` becomes invisible. Verify `Settings.force_bare=False`
+(default). If your orchestrator spawns the MCP server with extra env
+like `CLAUDE_MCP_FORCE_BARE=true`, override it or remove the env var.
+
+Symptom: `result.text == "Not logged in · Please run /login"` or the
+CLI exits immediately. Call `claude_health` first to distinguish
+"binary missing" (`CLAUDE_NOT_FOUND`) from "auth missing" (subprocess
+returns that string).

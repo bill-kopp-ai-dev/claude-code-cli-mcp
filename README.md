@@ -1,6 +1,6 @@
 # Claude Code CLI MCP Server
 
-Version: 0.1.0
+Version: 0.2.0 (post-sprint-N+1)
 
 A local STDIO MCP server that exposes tools and reusable prompts for running the Anthropic Claude Code CLI (`claude`) inside a controlled workspace.
 
@@ -44,11 +44,14 @@ Now you can leverage your Claude Pro/Team subscription or `ANTHROPIC_API_KEY` se
 
 **Prompts**
 
-- `claude_sync_orchestration`: Guidance playbook for executing synchronous tasks safely via `claude_run_task`.
-- `claude_async_orchestration`: Playbook for orchestrating background tasks via `claude_start_task` and `claude_poll_task`.
-- `claude_model_selection_guidance`: Outlines model selection constraints, allowed models, and aliases.
+- `claude_sync_orchestration`: Guidance playbook for executing synchronous tasks safely via `claude_run_task`. Includes parse-error / timeout / list_runs recovery recipes.
+- `claude_async_orchestration`: Playbook for orchestrating background tasks via `claude_start_task` + `claude_poll_task` + `claude_cancel_task`. Includes backoff schedule (1s → 10s) and post-restart recovery via `claude_list_runs`.
+- `claude_model_selection_guidance`: Lists all 4 model aliases (sonnet / fable / opus / haiku) with tier, cost, and multi-file-safety annotations. Source of truth: `MODEL_REGISTRY`.
 - `claude_security_and_workspace_rules`: Summarizes sandbox limits and rules for safe and permissive environments.
-- `claude_persistence_protocol`: Guides the orchestrator on maintaining the persistent memory files.
+- `claude_persistence_protocol`: Guides the orchestrator on maintaining the persistent memory files (load context, append session notes, update AGENTS.md with confirm gate).
+- `claude_timeout_help`: Decision matrix + code snippet for `(task_class, files_to_edit, model_alias) → (timeout_s, must_use_async)`. Matrix reflects the requested model, not always sonnet.
+- `claude_quickstart`: First-call cheat-sheet for new orchestrators (workspace_path discipline, tool catalog, common gotchas + troubleshoot).
+- `claude_troubleshoot`: Pattern-matches an error string and returns a canonical fix recipe (NOT_ALLOWED, NOT_LOGGED_IN, MODEL_NOT_ALLOWED, CLAUDE_NOT_FOUND, etc.).
 
 ## Companion Agent: Femtobot
 
@@ -81,6 +84,16 @@ See [`femtobot/docs/mcp.md`](https://github.com/bill-kopp-ai-dev/femtobot/blob/m
 §8 "Femtobot-specific patterns" for the full integration reference, and
 the [CLI-router-project analysis](../../blob/main/FEMTOBOT_MCP_INTEGRATION_ANALYSIS.md)
 for the design rationale.
+
+### `claude_self_test`
+
+Inspect every registered tool's input schema and report robustness.
+This is a **metadata-only** check — no tools are invoked, no subprocess
+is spawned, no quota is consumed. Safe to run in production or CI as a
+sanity probe.
+
+Output: per-tool schema introspection (allow_extra_keys vs allow type),
+focused on accidental strictness regressions.
 
 ## Persistent Memory
 
@@ -324,10 +337,10 @@ are backward-compatible additions.
 
 | Alias    | Tier     | Typical cost | Latency  | Multi-file safe |
 |----------|----------|--------------|----------|-----------------|
-| `sonnet` | standard | ~$0.50/run   | ~8 min   | ✅              |
-| `fable`  | mid_tier | ~$0.30/run   | ~12 min  | ✅              |
-| `opus`   | flagship | ~$1.50/run   | ~25 min  | ✅              |
-| `haiku`  | cheap    | ~$0.02/run   | ~1.5 min | ❌ (>5 files)   |
+| `sonnet` | standard | ~$0.50/run   | ~8 min   | yes             |
+| `fable`  | mid_tier | ~$0.30/run   | ~12 min  | yes             |
+| `opus`   | flagship | ~$1.50/run   | ~25 min  | yes             |
+| `haiku`  | cheap    | ~$0.02/run   | ~1.5 min | **no** (>5 files = warning) |
 
 The CLI strings live in `Settings.claude_model_aliases` and are
 overridable via env vars (`CLAUDE_MCP_CLAUDE_MODEL_ALIASES__SONNET`,
@@ -369,7 +382,9 @@ when Haiku is used on >5 files.
 ### Using the decision matrix
 
 Orchestrators can call the MCP prompt `prompt_timeout_help` (name
-`claude_timeout_help`) to get a structured recommendation:
+`claude_timeout_help`) to get a structured recommendation. The matrix
+in the response reflects the **requested model** (e.g. `opus` shows the
+opus timeouts, not sonnet's), so you can compare apples to apples.
 
 ```python
 # In your orchestrator
@@ -378,10 +393,11 @@ from claude_code_mcp.server import prompt_timeout_help
 guide = prompt_timeout_help(
     task_class="multi_file_refactor",
     files_to_edit=20,
-    model_alias="sonnet",
+    model_alias="opus",
 )
-# Returns: timeout_s=900, must_use_async=True, plus the full
-# decision matrix and code snippet.
+# Returns: timeout_s=900+, must_use_async=True, decision matrix
+# (rows = task classes, columns = model-specific timeouts), and a
+# pre-formatted python snippet using `claude_start_task`.
 ```
 
 Or directly use the helper:
@@ -390,10 +406,11 @@ Or directly use the helper:
 from claude_code_mcp.models import MODEL_REGISTRY, TaskClass
 from claude_code_mcp.timeout_policy import compute_timeout
 
-profile = MODEL_REGISTRY["sonnet"]
+profile = MODEL_REGISTRY["opus"]
 rec = compute_timeout(TaskClass.MULTI_FILE_REFACTOR, profile, files_to_edit=20)
 if rec.must_use_async:
-    run_id = await claude_start_task(req={"prompt": "...", "timeout_s": rec.timeout_s})
+    run_id = claude_start_task(req={"prompt": "...", "timeout_s": rec.timeout_s})
+    # Poll with claude_poll_task(drain=true) or via start/poll loop
 else:
     result = claude_run_task(req={"prompt": "...", "timeout_s": rec.timeout_s})
 ```
@@ -404,6 +421,21 @@ The new types are always available, but the policy helper is gated
 behind `CLAUDE_MCP_TIMEOUT_POLICY_ENABLED=false` (default OFF) for
 safe rollout. Set it to `true` in `.env` to enable automatic
 timeout recommendations in your orchestrator's request layer.
+
+### Sync vs async decision (recap)
+
+- `claude_run_task` (sync, ≤600s wrapper cap) — `trivial_edit`,
+  `smoke_test`, `review`, `single_feature`, `docs_update`,
+  `test_suite`, small `multi_file_refactor` (≤20 files).
+- `claude_start_task` + `claude_poll_task` (async, ≤3600s) —
+  large `multi_file_refactor` (>20 files), `architecture`,
+  `migration`, `long_running`.
+
+**If a sync call returns `parse_error`** (response is not valid JSON),
+do **not** retry sync — the subprocess likely returned truncated /
+non-JSON output due to a wrapper-level timeout. Switch to
+`claude_start_task` (async) which buffers output incrementally and
+survives longer walls.
 
 ## Security
 
@@ -427,6 +459,14 @@ The server cannot locate the `claude` executable. Make sure it is installed (e.g
 
 ### `NOT_ALLOWED: workspace_path is outside allowed roots`
 Your workspace path is outside of the configured roots. Include the target directory in the `CLAUDE_MCP_ALLOWED_ROOTS` JSON array, or launch the server from within the target folder.
+
+> ⚠️ `CLAUDE_MCP_ALLOWED_ROOTS` and other server env vars are read at MCP server STARTUP. Editing `.env` after the server is running has no effect — restart the MCP server (in your client's MCP panel) for changes to apply.
+
+### `NOT_LOGGED_IN` / `result.text == "Not logged in · Please run /login"`
+The `claude` CLI cannot find its OAuth token. The most common cause is the `--bare` flag being passed to the subprocess — `--bare` bypasses `~/.claude/` entirely, so `~/.claude.json` (which holds the token) is invisible. Verify this server's `force_bare=False` (the default). Alternative: run `claude login` interactively in your shell to seed `~/.claude.json`, then restart this MCP server.
+
+### `MODEL_NOT_ALLOWED`
+The requested `model` (or `fallback_model`) is not in `Settings.allowed_models` (configurable via `CLAUDE_MCP_ALLOWED_MODELS`). Empty allowlist disables validation.
 
 ### `PERSISTENCE_FILE_TOO_LARGE`
 A persistence file has reached the maximum allowed bytes (default 1 MiB). Clean up or truncate obsolete entries in the file (`~/.open-cli-router/claude-code/MEMORY.md` or `PROJECTS.md`) to allow new writes.

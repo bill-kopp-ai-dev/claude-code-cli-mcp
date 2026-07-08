@@ -19,16 +19,19 @@ Output: `ClaudeHealthResponse`
 Notes:
 - Resolves the `claude` CLI binary and returns its version.
 - Optionally checks authentication status by executing `claude auth status --text`.
+- Use this as the first call in any orchestration session to validate
+  the environment before dispatching tasks.
 
 ### claude_run_task
 
 Input: `ClaudeRunTaskRequest`
-- `workspace_path: str`
-- `prompt: str`
+- `workspace_path: str` (REQUIRED — must be inside `CLAUDE_MCP_ALLOWED_ROOTS`)
+- `prompt: str` (REQUIRED)
 - `options: ClaudeExecOptions` (nested object, default: defaults)
 - `capture_changes: bool` (default: True)
 - `change_scope: "workspace" | "git_only"` (default: "workspace")
-- `model: str | None` (default: None)
+- `model: str | None` (default: None; aliases: sonnet/fable/opus/haiku)
+- `fallback_model: str | None` (default: None)
 - `max_turns: int | None` (default: None)
 - `max_budget_usd: float | None` (default: None)
 - `effort: "low" | "medium" | "high" | "xhigh" | "max" | None` (default: None)
@@ -41,7 +44,7 @@ Input: `ClaudeRunTaskRequest`
 `ClaudeExecOptions` Fields:
 - `sandbox: bool` (default: True)
 - `dangerously_skip_permissions: bool` (default: False)
-- `timeout_s: int` (default: 600, range: 1-3600)
+- `timeout_s: int` (default: 600, range: 1-3600 — note: sync wrapper is hard-capped at 600s in practice; use `claude_start_task` for >600s)
 - `env: dict[str, str] | None` (default: None)
 - `extra_args: list[str]` (default: empty list)
 
@@ -66,6 +69,16 @@ Output: `ClaudeRunTaskResponse`
 
 Notes:
 - Executes a blocking synchronous `claude` CLI execution using `--output-format json`.
+- Sync mode is bounded by FastMCP's 600s wrapper cap. For tasks that may
+  exceed 600s, use `claude_start_task` (async, up to 3600s) instead.
+  For timeout routing, call the `claude_timeout_help` prompt first.
+- Cost depends on `model` + prompt size; check `total_cost_usd` in the
+  response. Typical: haiku ~$0.02, sonnet ~$0.50, opus ~$1.50.
+- If the call returns a malformed response (parse_error), the subprocess
+  likely returned non-JSON (truncated, mid-timeout, or auth failure). Do
+  NOT retry sync — switch to `claude_start_task` (async) which buffers
+  output safely. Use `claude_list_runs` to recover the run_id of the
+  in-flight subprocess.
 - Injects persistent memory context automatically at the start of the prompt if persistence is enabled and initialized.
 - Extracts standard result fields (`session_id`, `total_cost_usd`, `duration_ms`, `num_turns`, `modelUsage` from the final JSON events).
 
@@ -80,14 +93,19 @@ Output: `ClaudeStartTaskResponse`
 
 Notes:
 - Starts `claude` in an asynchronous background process using `--output-format stream-json --verbose --include-partial-messages`.
+- Use for any task that may exceed 600s (architecture, migration, large
+  multi-file refactors, long-running data agents).
 - Automatically enforces `CLAUDE_MCP_MAX_CONCURRENT_RUNS` limit (default: 10).
+  Calls beyond the limit return `MAX_CONCURRENT_RUNS_EXCEEDED`.
+- Active runs survive across orchestrator/MCP-client restarts and can be
+  recovered via `claude_list_runs` (use the run_id to poll or cancel).
 
 ### claude_poll_task
 
 Input: `ClaudePollTaskRequest`
 - `run_id: str`
-- `drain: bool` (default: False. If True, waits synchronously for task completion up to its timeout)
-- `wait_seconds: float` (default: 0.5)
+- `drain: bool` (default: False. If True, blocks until status is no longer "running" — use for fire-and-wait. Bounded by your MCP client's request timeout, not the async task's timeout_s.)
+- `wait_seconds: float` (default: 0.5; recommended schedule when drain=false: start at 1s, double up to 10s if still running)
 
 Output: `ClaudePollTaskResponse`
 - `run_id: str`
@@ -101,13 +119,19 @@ Output: `ClaudePollTaskResponse`
 
 Notes:
 - Read-only call that fetches accumulated logs/stream events.
+- For tight control loops with explicit backoff, prefer drain=false.
+- For fire-and-wait semantics, use drain=true (but watch your MCP client's request timeout — if you expect a long wait, poll in a loop with explicit wait_seconds instead).
 - Once completed, the final workspace changes are automatically calculated and returned inside `result.changes`.
 
 ### claude_cancel_task
 
 Input: `ClaudeCancelTaskRequest`
 - `run_id: str`
-- `force: bool` (default: False. If True, sends SIGKILL; otherwise sends SIGINT to gracefully terminate)
+- `force: bool` (default: False. Two escalation levels:
+  - force=false (default): SIGTERM (graceful). Subprocess has ~5s to clean up
+    before the OS escalates. Try this first.
+  - force=true: SIGKILL (immediate). Use only if the subprocess doesn't
+    respond to SIGTERM within ~5s.)
 
 Output: `ClaudeCancelTaskResponse`
 - `canceled: bool`
@@ -127,11 +151,19 @@ Output: `ClaudeListRunsResponse`
 - `status: "running" | "done" | "error" | "timeout" | "cancelled"`
 - `started_at: datetime`
 
+Notes:
+- Use this for **recovery** after orchestrator restart: active async runs
+  (from `claude_start_task`) survive across MCP client restarts and can be
+  polled via `claude_poll_task` or stopped via `claude_cancel_task` using
+  the run_id from this listing.
+- Active runs are listed first (newest first), followed by completed runs
+  (bounded by `Settings.max_runs`).
+
 ### claude_init_persistence
 
 Input: `ClaudeInitPersistenceRequest`
-- `force: bool` (default: False)
-- `seed_templates: bool | None` (default: None)
+- `force: bool` (default: False) — re-create files even if they exist
+- `seed_templates: bool | None` (default: None) — override the per-server default for seeding templates
 
 Output: `ClaudeInitPersistenceResponse`
 - `base_dir: str`
@@ -142,20 +174,25 @@ Output: `ClaudeInitPersistenceResponse`
 Notes:
 - Initializes the file-based persistence layer folder at `~/.open-cli-router/claude-code/` (or `CLAUDE_MCP_PERSISTENCE_BASE_DIR/claude-code/`).
 - Idempotent: does not overwrite existing files unless `force=true` is supplied.
+- Call this ONCE at startup before `claude_load_persistence_context` will produce useful results.
 
 ### claude_read_persistence
 
 Input: `ClaudeReadPersistenceRequest`
 - `file: "agents" | "projects" | "memory"`
-- `offset: int` (default: 0)
-- `limit: int | None` (default: None)
+- `offset: int` (default: 0) — start reading from line N (0-indexed)
+- `limit: int | None` (default: None) — max lines to return (None = no limit)
 
 Output: `ClaudeReadPersistenceResponse`
 - `file: str`
 - `content: str`
 - `size_bytes: int`
-- `truncated: bool`
+- `truncated: bool` — true when content was truncated by `CLAUDE_MCP_PERSISTENCE_MAX_FILE_BYTES`
 - `modified_at: datetime | None`
+
+Notes:
+- Large files are automatically capped at `CLAUDE_MCP_PERSISTENCE_MAX_FILE_BYTES`
+  (default 1 MiB). The `truncated` flag indicates if content was clipped.
 
 ### claude_append_persistence
 
@@ -173,6 +210,8 @@ Output: `ClaudeAppendPersistenceResponse`
 
 Notes:
 - Writing/appending to `AGENTS.md` (the system prompt) in safe mode raises a `CONFIRM_REQUIRED` error unless `confirm` is set to `True`.
+- Do not store secrets, credentials, or full file dumps — keep entries
+  small and high-signal.
 
 ### claude_update_persistence
 
@@ -181,14 +220,16 @@ Input: `ClaudeUpdatePersistenceRequest`
 - `section_anchor: str` — heading text without the `## ` prefix
   (matching is case-insensitive and strips leading `#` and whitespace)
 - `new_content: str`
-- `mode: "replace" | "append"` (default: "replace")
+- `mode: "replace" | "append"` (default: "replace") — replace the entire section vs append inside it
 - `confirm: bool` (default: False) — required `True` to update `AGENTS.md`
   in safe mode (parity with `agy-mcp-server`).
 
 Output: `ClaudeUpdatePersistenceResponse`
 - `file: str`
 - `section_anchor: str`
-- `matched: bool`
+- `matched: bool` — true when the section_anchor was found and edited;
+  false when the anchor was not found and no edit happened (so callers
+  can detect typos before silent-append)
 - `new_size_bytes: int`
 
 Notes:
@@ -197,7 +238,7 @@ Notes:
 ### claude_load_persistence_context
 
 Input: `ClaudeLoadPersistenceContextRequest`
-- `include: list["agents" | "projects" | "memory"]` (default: ["agents", "projects", "memory"])
+- `include: list["agents" | "projects" | "memory"]` (default: all three)
 - `max_chars_per_file: int` (default: 20000)
 
 Truncation strategy (Phase 2, C4):
@@ -215,6 +256,12 @@ Output: `ClaudeLoadPersistenceContextResponse`
 - `total_chars: int`
 - `base_dir: str`
 - `initialized: bool`
+
+Notes:
+- Call this at the start of each session to hydrate orchestrator memory
+  before dispatching tasks to `claude_run_task` / `claude_start_task`.
+- Returns `initialized=false` if `claude_init_persistence` has not been
+  called yet (no excerpts will be present).
 
 Persistence settings (env vars, all `CLAUDE_MCP_PERSISTENCE_*`):
 - `CLAUDE_MCP_PERSISTENCE_ENABLED` (default `true`)
@@ -240,11 +287,14 @@ Persistence settings (env vars, all `CLAUDE_MCP_PERSISTENCE_*`):
 
 The MCP server exposes the following 5 system prompts for coordinating workflows:
 
-- `claude_sync_orchestration`: Instructs orchestrator agents on how to use `claude_run_task` to execute a single synchronous workspace command, inspect results, and handle changes.
-- `claude_async_orchestration`: Guides agents through the lifecycle of asynchronous background commands (start, poll with backoff, cancel, and complete).
-- `claude_model_selection_guidance`: Informs the client agent how model parameters are passed and lists valid aliases.
+- `claude_sync_orchestration`: Instructs orchestrator agents on how to use `claude_run_task` to execute a single synchronous workspace command, inspect results, and handle changes (including parse_error recovery via `claude_list_runs`).
+- `claude_async_orchestration`: Guides agents through the lifecycle of asynchronous background commands (start, poll with explicit 1s→10s backoff, cancel with SIGTERM→SIGKILL escalation, complete). Includes post-restart recovery via `claude_list_runs`.
+- `claude_model_selection_guidance`: Informs the client agent how model parameters are passed; lists all 4 aliases (sonnet/fable/opus/haiku) with tier + cost + multi-file-safety annotations. Source of truth: `MODEL_REGISTRY` (not CLI docs).
 - `claude_security_and_workspace_rules`: Enforces path boundaries, `--bare` execution, and restricts parameters in safe vs permissive mode.
 - `claude_persistence_protocol`: Details the lifecycle of loading persistence context before a task and appending session learning/summary after a task.
+- `claude_timeout_help`: Decision matrix + code snippet for `(task_class, files_to_edit, model_alias) → (timeout_s, must_use_async)`. Matrix reflects the requested model profile (not always sonnet).
+- `claude_quickstart`: First-call cheat-sheet for new orchestrators (workspace_path discipline, tool catalog, common gotchas + troubleshoot).
+- `claude_troubleshoot`: Pattern-matches an error string and returns a canonical fix recipe (NOT_ALLOWED, NOT_LOGGED_IN, MODEL_NOT_ALLOWED, CLAUDE_NOT_FOUND, etc.).
 
 ---
 
@@ -252,11 +302,24 @@ The MCP server exposes the following 5 system prompts for coordinating workflows
 
 Model selection is controlled per request by specifying the `model` parameter inside `claude_run_task` or `claude_start_task` (which passes `--model <model>` to the CLI process).
 
-Common model aliases include:
-- `sonnet`: Claude 3.5 Sonnet (Recommended)
-- `opus`: Claude 3 Opus
+**Recommended aliases** (defined by `Settings.claude_model_aliases`,
+defaults: `{sonnet, fable, opus, haiku}`):
 
-You can also specify full names like `claude-sonnet-4-6`. If `CLAUDE_MCP_ALLOWED_MODELS` is configured (default: `{"sonnet", "opus"}`), any requested model must reside in that set, otherwise a `MODEL_NOT_ALLOWED` error is raised. If `CLAUDE_MCP_ALLOWED_MODELS` is an empty set, validation is skipped.
+- `sonnet`: Standard workhorse, multi-file safe, ~$0.50/run
+- `fable`:  Mid-tier, multi-file safe, ~$0.30/run
+- `opus`:   Flagship — only model with full reasoning depth; required for
+           architecture / migration, ~$1.50/run
+- `haiku`:  Cheapest, ~$0.02/run. **Avoid for >5-file edits**
+           (multi_file_safe=False triggers a `compute_timeout` warning).
+
+You can also specify full names like `claude-sonnet-4-6`. Aliases are
+resolved to full CLI strings via `Settings.claude_model_aliases`
+(env-overridable: `CLAUDE_MCP_CLAUDE_MODEL_ALIASES__SONNET` etc).
+
+If `CLAUDE_MCP_ALLOWED_MODELS` is configured (default:
+`{"sonnet", "fable", "opus", "haiku"}`), any requested model must reside
+in that set, otherwise a `MODEL_NOT_ALLOWED` error is raised. If
+`CLAUDE_MCP_ALLOWED_MODELS` is an empty set, validation is skipped.
 
 ## Model Registry & Timeout Policy
 
@@ -323,10 +386,13 @@ Auto-bumps `timeout_s` based on `files_to_edit`:
 a structured guide with:
 - Recommended (timeout_s, must_use_async) for the requested triple
 - Pre-formatted python snippet (claude_run_task vs claude_start_task)
-- Full decision matrix
+- Full decision matrix **scoped to the requested model profile** (not always sonnet)
 - SYNC_CEILING_S / ASYNC_CEILING_S reference
 - Sync/async routing rules
-- Model registry listing
+- Model registry listing (sonnet/fable/opus/haiku)
+
+When `model_alias='haiku'` and `files_to_edit > 5`, the response emits
+a `multi_file_safe=False` warning recommending opus or sonnet.
 
 ## Settings additions (this sprint)
 
