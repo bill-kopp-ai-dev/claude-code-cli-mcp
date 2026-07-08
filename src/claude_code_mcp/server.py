@@ -15,6 +15,7 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
+from claude_code_mcp import __version__
 from claude_code_mcp.changes import (
     diff_snapshots, git_changed_files, git_diff, is_git_repo, snapshot_tree,
 )
@@ -321,12 +322,16 @@ def _finalize_active_run(active: ActiveRun) -> None:
 def claude_health(req: ClaudeHealthRequestIn | None = None) -> ClaudeHealthResponse:
     """Health check for the Claude Code CLI binary.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Verifies the `claude` binary is on PATH, captures its `--version` output,
+    and reports auth status (whether `~/.claude.json` has an OAuth token).
+    Use this as the first call in any orchestration session to validate the
+    environment.
+
+    Optional fields:
+        - expected_version (str): if set, returns ok=false on version mismatch
+
+    Returns:
+        - claude_path, claude_version, ok, auth_status, notes
     """
     if req is None:
         req = ClaudeHealthRequest()
@@ -354,14 +359,22 @@ def claude_health(req: ClaudeHealthRequestIn | None = None) -> ClaudeHealthRespo
 
 @mcp.tool(name=tool_name("run_task"))
 def claude_run_task(req: ClaudeRunTaskRequestIn | None = None) -> ClaudeRunTaskResponse:
-    """Run a single Claude task synchronously.
+    """Run a single Claude task synchronously (bounded by FastMCP's 600s wrapper cap).
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Required: workspace_path, prompt.
+    Common options: model (alias from Settings.claude_model_aliases), fallback_model,
+    permission_mode, options.timeout_s (default 300, max 600), capture_changes.
+
+    Estimated cost depends on `model` and prompt size — check `total_cost_usd`
+    in the response. Typical ranges: haiku ~$0.02, sonnet ~$0.50, opus ~$1.50.
+
+    For tasks that may exceed 600s (architecture, migration, large refactors),
+    use `claude_start_task` (async) instead. For timeout routing, call the
+    `claude_timeout_help` prompt first.
+
+    Returns: ClaudeRunTaskResponse with result, stdout/stderr, exit_code,
+    timed_out, total_cost_usd, model_usage, and (if capture_changes=true) a
+    unified git diff of workspace changes.
     """
     if req is None:
         req = ClaudeRunTaskRequest()
@@ -473,14 +486,19 @@ def claude_run_task(req: ClaudeRunTaskRequestIn | None = None) -> ClaudeRunTaskR
 
 @mcp.tool(name=tool_name("start_task"))
 def claude_start_task(req: ClaudeStartTaskRequestIn | None = None) -> ClaudeStartTaskResponse:
-    """Start a Claude Code CLI task asynchronously.
+    """Start a Claude Code CLI task asynchronously (up to 3600s).
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Returns immediately with a run_id. The subprocess continues running in
+    the background; use `claude_poll_task` to monitor and `claude_cancel_task`
+    to stop. Use this for any task that may exceed 600s (architecture,
+    migration, large multi-file refactors, long-running data agents).
+
+    Required: workspace_path, prompt.
+    Optional: model, fallback_model, permission_mode, options.timeout_s
+    (default 300, max 3600 for async), capture_changes.
+
+    Concurrent run limit: bounded by Settings.max_concurrent_runs. New calls
+    beyond that limit return MAX_CONCURRENT_RUNS_EXCEEDED.
     """
     if req is None:
         req = ClaudeStartTaskRequest()
@@ -565,12 +583,18 @@ def claude_start_task(req: ClaudeStartTaskRequestIn | None = None) -> ClaudeStar
 def claude_poll_task(req: ClaudePollTaskRequestIn | None = None) -> ClaudePollTaskResponse:
     """Poll an asynchronous task.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Two polling modes:
+        - drain=false (default): returns immediately with current state
+          (new messages, stdout/stderr byte counts, elapsed time). Use for
+          tight control loops with explicit backoff.
+        - drain=true: blocks until status is no longer 'running' (fire-and-wait).
+          Note: this is bounded by your MCP client's request timeout, not the
+          async task's timeout_s. For long blocks, prefer async drain with
+          orchestrator-level polling.
+
+    Returns: ClaudePollTaskResponse with status (running|done|error|timeout|cancelled),
+    new_messages, stdout_len/stderr_len, elapsed_seconds, and (once terminal)
+    the full result with total_cost_usd, model_usage, and changes.
     """
     if req is None:
         req = ClaudePollTaskRequest()
@@ -634,12 +658,15 @@ def claude_poll_task(req: ClaudePollTaskRequestIn | None = None) -> ClaudePollTa
 def claude_cancel_task(req: ClaudeCancelTaskRequestIn | None = None) -> ClaudeCancelTaskResponse:
     """Cancel a running task.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Two escalation levels:
+        - force=false (default): sends SIGTERM (graceful). The subprocess has
+          ~5s to clean up before the OS escalates. Try this first.
+        - force=true: sends SIGKILL (immediate). Use only if the subprocess
+          doesn't respond to SIGTERM within ~5s.
+
+    Returns: ClaudeCancelTaskResponse with canceled (bool) and status
+    ("cancelled" if actively stopped, "already_done" if run finished
+    naturally, "not_found" if run_id is unknown).
     """
     if req is None:
         req = ClaudeCancelTaskRequest()
@@ -660,14 +687,16 @@ def claude_cancel_task(req: ClaudeCancelTaskRequestIn | None = None) -> ClaudeCa
 
 @mcp.tool(name=tool_name("list_runs"))
 def claude_list_runs(req: ClaudeListRunsRequestIn | None = None) -> ClaudeListRunsResponse:
-    """List recent runs.
+    """List recent runs (active + recently completed).
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Returns ClaudeRunSummary entries ordered newest-first, with active
+    `claude_start_task` runs at the top followed by completed/cancelled/
+    timed-out runs from the in-memory store (bounded by Settings.max_runs).
+
+    Use this for recovery after orchestrator restart: active async runs
+    survive across MCP client restarts and can be polled/cancelled via
+    `claude_poll_task` and `claude_cancel_task` using the run_id from this
+    listing.
     """
     if req is None:
         req = ClaudeListRunsRequest()
@@ -709,12 +738,14 @@ def claude_list_runs(req: ClaudeListRunsRequestIn | None = None) -> ClaudeListRu
 def claude_init_persistence(req: ClaudeInitPersistenceRequestIn | None = None) -> ClaudeInitPersistenceResponse:
     """Initialize the persistence directory and seed the three markdown files.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Idempotent: re-running without force=true is a no-op if files already
+    exist. Creates the directory at the location resolved by
+    `Settings.resolve_persistence_base_dir()` and writes AGENTS.md,
+    PROJECTS.md, MEMORY.md (unless they already exist).
+
+    Optional fields:
+        - force (bool): re-create files even if they exist
+        - seed_templates (bool|None): whether to seed the default templates
     """
     if req is None:
         req = ClaudeInitPersistenceRequest()
@@ -732,14 +763,16 @@ def claude_init_persistence(req: ClaudeInitPersistenceRequestIn | None = None) -
 
 @mcp.tool(name=tool_name("read_persistence"))
 def claude_read_persistence(req: ClaudeReadPersistenceRequestIn | None = None) -> ClaudeReadPersistenceResponse:
-    """Read one of the three persistence files.
+    """Read one of the three persistence files (agents | projects | memory).
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Optional fields:
+        - file (str): which file to read (default: memory)
+        - offset (int): start reading from line N (0-indexed)
+        - limit (int|None): max lines to return (None = no limit)
+
+    Large files are automatically truncated at
+    Settings.persistence_max_file_bytes; the response includes a
+    `truncated` flag if this happens.
     """
     if req is None:
         req = ClaudeReadPersistenceRequest()
@@ -760,12 +793,15 @@ def claude_read_persistence(req: ClaudeReadPersistenceRequestIn | None = None) -
 def claude_append_persistence(req: ClaudeAppendPersistenceRequestIn | None = None) -> ClaudeAppendPersistenceResponse:
     """Append content to one of the persistence files.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Required: file (agents|projects|memory), content.
+    Optional: section_header (str|None) — if provided, the append is placed
+    under a heading; otherwise content is appended at the end of the file.
+
+    Safe-mode constraint: in `Settings.mode == "safe"`, updating AGENTS.md
+    requires `confirm=true`. The same applies to `update_persistence`.
+
+    Do not store secrets, credentials, or full file dumps — keep entries
+    small and high-signal.
     """
     if req is None:
         req = ClaudeAppendPersistenceRequest()
@@ -788,12 +824,14 @@ def claude_append_persistence(req: ClaudeAppendPersistenceRequestIn | None = Non
 def claude_update_persistence(req: ClaudeUpdatePersistenceRequestIn | None = None) -> ClaudeUpdatePersistenceResponse:
     """Replace or append to a section in one of the persistence files.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Required: file, section_anchor, new_content.
+    Optional: mode (replace|append) — replace the entire section vs append
+    inside it (default replace).
+
+    Safe-mode constraint: in `Settings.mode == "safe"`, updating AGENTS.md
+    requires `confirm=true`. Returns `matched=true` when the section_anchor
+    was found; `matched=false` when the anchor was not found and no edit
+    happened (so you can detect typos before silent appending).
     """
     if req is None:
         req = ClaudeUpdatePersistenceRequest()
@@ -821,12 +859,14 @@ def claude_update_persistence(req: ClaudeUpdatePersistenceRequestIn | None = Non
 def claude_load_persistence_context(req: ClaudeLoadPersistenceContextRequestIn | None = None) -> ClaudeLoadPersistenceContextResponse:
     """Load the persistence files as context for the current session.
 
-    Args shape:
-        The MCP client MUST pass arguments wrapped in a `req` object:
-            `{"req": {"field1": value1, "field2": value2, ...}}`
-        For backwards-compatibility, the server also accepts `args={}` for
-        tools whose request model has all-optional fields; required-field
-        errors surface as Pydantic ValidationError.
+    Returns head+tail excerpts of each file (head_ratio controlled by
+    Settings.persistence_truncation_head_ratio). Use this at the start of
+    each session to hydrate orchestrator memory before dispatching tasks.
+
+    Optional fields:
+        - include (list[str]|None): subset of files to load
+          (agents|projects|memory). None = all three.
+        - max_chars_per_file (int): per-file char cap (default from settings).
     """
     if req is None:
         req = ClaudeLoadPersistenceContextRequest()
@@ -869,16 +909,24 @@ def prompt_sync_orchestration(*, workspace_path: str, goal: str) -> str:
         "\n"
         "Recommended execution plan (synchronous):\n"
         "1) Call `claude_health` once if you haven't verified the binary for this environment.\n"
-        "2) Call `claude_run_task` with:\n"
+        "2) For tasks expected to exceed 600s of wall-clock, use the async path instead\n"
+        "   (call `prompt_timeout_help` first to estimate). Sync is bounded by\n"
+        "   FastMCP's sync wrapper cap.\n"
+        "3) Call `claude_run_task` with:\n"
         "   - workspace_path set to the provided value\n"
         "   - prompt containing clear instructions and acceptance criteria\n"
         "   - capture_changes=true\n"
         "   - change_scope=\"workspace\"\n"
-        "3) Use the returned `changes` field to decide what to do next:\n"
+        "4) Use the returned `changes` field to decide what to do next:\n"
         "   - If changes.method==\"git\": inspect `diff` (unified git diff) and changed_files.\n"
         "   - If changes.method==\"snapshot\": inspect changed_files; open files as needed to review.\n"
-        "4) If the run failed or timed out:\n"
+        "5) If the run failed or timed out:\n"
         "   - Review stderr and stdout for actionable error text.\n"
+        "   - If the response carries `parse_error`, the CLI subprocess likely returned\n"
+        "     non-JSON (truncated, mid-timeout, or auth failure). Do NOT retry sync —\n"
+        "     switch to `claude_start_task` (async) which buffers output safely.\n"
+        "   - Use `claude_list_runs` to enumerate recent runs and find run_ids you can\n"
+        "     still recover with `claude_poll_task` or stop with `claude_cancel_task`.\n"
         "   - Retry with a more constrained prompt, or break down the task.\n"
         "\n"
         "JSON example (claude_run_task):\n"
@@ -920,13 +968,17 @@ def prompt_async_orchestration(*, workspace_path: str, goal: str) -> str:
         "1) Call `claude_start_task` with capture_changes=true (unless you explicitly don't need it).\n"
         "2) Store run_id.\n"
         "3) Poll with backoff:\n"
-        "   - Poll with `claude_poll_task` using `drain=false` and optional `wait_seconds`.\n"
-        "   - Or poll with `drain=true` to wait synchronously for completion.\n"
-        "   - Always stop when status != \"running\".\n"
+        "   - First poll: wait_seconds=1 (quick status check)\n"
+        "   - Subsequent polls: double wait_seconds up to 10s if still running\n"
+        "   - Don't poll faster than 1s — wastes tokens on log tail output\n"
+        "   - Use `drain=false` for tight control loops, `drain=true` for fire-and-wait\n"
+        "   - Always stop when status != \"running\" (terminal: done/error/timeout/cancelled)\n"
         "4) If you detect a stuck run or need to stop:\n"
-        "   - Call `claude_cancel_task` with force=false first.\n"
-        "   - If it does not exit promptly, call again with force=true.\n"
-        "5) Once done:\n"
+        "   - Call `claude_cancel_task` with force=false first (SIGTERM, graceful).\n"
+        "   - If it does not exit within 5s, call again with force=true (SIGKILL).\n"
+        "5) After orchestrator restart, use `claude_list_runs` to discover active async\n"
+        "   runs from a previous session — they survive across MCP client restarts.\n"
+        "6) Once done:\n"
         "   - Inspect result.stdout/result.stderr and changes.\n"
         "\n"
         "JSON example (claude_start_task):\n"
@@ -970,15 +1022,22 @@ def prompt_model_selection_guidance() -> str:
         "- Attempting to use a model not in the allowlist raises a "
         "`MODEL_NOT_ALLOWED` error.\n"
         "\n"
-        "Recommended aliases (per CLI docs):\n"
-        "- sonnet: latest Claude Sonnet model\n"
-        "- opus: latest Claude Opus model\n"
-        "- haiku: only valid for subagent `--agents` definitions\n"
+        "Recommended aliases (resolved by Settings.claude_model_aliases → MODEL_REGISTRY):\n"
+        "- sonnet: default workhorse, ~$0.50/run, multi-file safe\n"
+        "- fable:  mid-tier, ~$0.30/run, multi-file safe\n"
+        "- opus:   flagship, ~$1.50/run, multi-file safe — only model with full reasoning depth for architecture/migration\n"
+        "- haiku:  cheapest, ~$0.02/run, multi_file_safe=False (avoid for >5 file edits)\n"
         "\n"
-        "If the request does not set `model`, the CLI uses its built-in "
-        "default (typically `sonnet` on Pro/Team accounts). `fallback_model` "
-        "is opt-in — set it explicitly when you want graceful degradation "
-        "during overload.\n"
+        "The CLI strings live in `Settings.claude_model_aliases` (env vars\n"
+        "`CLAUDE_MCP_CLAUDE_MODEL_ALIASES__SONNET` etc). Defaults are\n"
+        "placeholders (`claude-sonnet-5-...`) — set them to your installed\n"
+        "`claude --list-models` output before relying on a specific alias.\n"
+        "\n"
+        "If the request does not set `model`, the server defaults to `sonnet`\n"
+        "(via `Settings.claude_model_alias_default`). `fallback_model` is opt-in\n"
+        "— set it explicitly when you want graceful degradation during overload.\n"
+        "\n"
+        "For timeout + sync/async routing, call the `claude_timeout_help` prompt.\n"
     )
 
 
@@ -1016,14 +1075,7 @@ def prompt_timeout_help(
     tc = task_class.lower().strip()
     fa = model_alias.lower().strip()
 
-    # Build the matrix string (Table-driven — same data the policy uses)
-    matrix = "\n".join(
-        f"| {member.value:<24} | {compute_timeout(member, MODEL_REGISTRY['sonnet'], files_to_edit=5).timeout_s:>5}s | "
-        f"{compute_timeout(member, MODEL_REGISTRY['sonnet'], files_to_edit=5).must_use_async!s:<5} |"
-        for member in TaskClass
-    )
-
-    # Look up the specific recommendation
+    # Look up the profile first — matrix should reflect the requested model.
     try:
         profile = MODEL_REGISTRY[fa]
     except KeyError:
@@ -1032,6 +1084,15 @@ def prompt_timeout_help(
             f"{sorted(MODEL_REGISTRY.keys())}"
         )
 
+    # Build the matrix string using the REQUESTED profile (not always sonnet).
+    # Table-driven — same data the policy uses.
+    matrix = "\n".join(
+        f"| {member.value:<24} | {compute_timeout(member, profile, files_to_edit=5).timeout_s:>5}s | "
+        f"{compute_timeout(member, profile, files_to_edit=5).must_use_async!s:<5} |"
+        for member in TaskClass
+    )
+
+    # Validate task_class (after profile, so unknown model_alias wins on priority)
     try:
         task_enum = TaskClass(tc)
     except ValueError:
@@ -1063,7 +1124,7 @@ def prompt_timeout_help(
         f")\n"
         f"```\n"
         f"\n"
-        f"## Decision matrix (default, files_to_edit=5, sonnet)\n"
+        f"## Decision matrix (default, files_to_edit=5, **{profile.alias}** — the requested model)\n"
         f"\n"
         f"| task_class              | timeout | async |\n"
         f"|-------------------------|---------|-------|\n"
@@ -1131,9 +1192,11 @@ def prompt_persistence_protocol() -> str:
     )
     if _settings.persistence_location == "workspace":
         location_note += (
-            "When location='workspace', the files live in your project "
-            "directory (one level up from the server's CWD).\n"
-            "Consider adding '.open-cli-router/' to .gitignore to avoid "
+            "When location='workspace', the files live in the workspace path\n"
+            "you pass to run_task — typically inside your project root. The\n"
+            "exact subdirectory depends on how the server resolves it from\n"
+            "the `req.workspace_path` argument.\n"
+            "Consider adding '.open-cli-router/' to .gitignore to avoid\n"
             "committing agent memory to source control.\n"
         )
     location_note += "\n"
@@ -1196,6 +1259,9 @@ def prompt_quickstart() -> str:
         "## workspace_path for run_task\n"
         "    Must be inside CLAUDE_MCP_ALLOWED_ROOTS (JSON-array env var).\n"
         "    Default = Path.cwd() of the server process = the server's project dir.\n"
+        "    ALWAYS pass workspace_path explicitly. The default (server's CWD)\n"
+        "    is rarely what you want — it's the MCP server's startup directory,\n"
+        "    not the repo you're working on.\n"
         "\n"
         "## Common gotchas → call troubleshoot prompt with the error string\n"
         "    Use prompt `claude_troubleshoot` with the exact error message.\n"
@@ -1259,7 +1325,11 @@ def prompt_troubleshoot(error: str = "") -> str:
         return (
             "BUG: workspace_path is not in the server's allowed roots.\n"
             "FIX: set CLAUDE_MCP_ALLOWED_ROOTS=[\"/your/path\"] (JSON array) in the\n"
-            "server's env, or pass a workspace_path inside Path.cwd() of the server process."
+            "server's env, or pass a workspace_path inside Path.cwd() of the server process.\n"
+            "\n"
+            "IMPORTANT: env vars are read at MCP server STARTUP. Editing `.env` after\n"
+            "the server is running has no effect — you must restart the MCP server (in\n"
+            "your client's MCP panel) for the new ALLOWED_ROOTS to take effect."
         )
     if "tool is not found" in err_lc or "mcp tool is not found" in err_lc:
         return (
@@ -1268,10 +1338,16 @@ def prompt_troubleshoot(error: str = "") -> str:
         )
     if "not logged in" in err_lc or "/login" in err_lc or "result.*not logged in" in err_lc:
         return (
-            "BUG: claude CLI auth not initialized for print mode (-p).\n"
-            "FIX: user must run `claude login` interactively once. After that, the\n"
-            "`claude_health` tool reports logged-in but `claude_run_task` may still fail\n"
-            "if print-mode auth is missing — this is a known cli-side quirk."
+            "BUG: claude CLI cannot find its OAuth token (print mode -p).\n"
+            "FIX (most likely): ensure this MCP server is NOT launched with the `--bare`\n"
+            "flag. The `--bare` flag bypasses `~/.claude/` entirely, so Claude Code cannot\n"
+            "locate `~/.claude.json` (which holds the OAuth token). Default for this server\n"
+            "is `force_bare=False` — verify in `Settings.force_bare`.\n"
+            "\n"
+            "FIX (alternative): run `claude login` interactively once in your shell to\n"
+            "seed `~/.claude.json`, then restart this MCP server. `claude_health` may report\n"
+            "logged-in but `claude_run_task` can still fail if print-mode auth is missing —\n"
+            "this is a known CLI-side quirk around non-interactive flag handling."
         )
     if "tolerant_count" in err_lc or "requires_req_count" in err_lc:
         return (
@@ -1357,7 +1433,7 @@ def claude_self_test(req: ClaudeSelfTestRequestIn | None = None) -> ClaudeSelfTe
         tolerant_count=tolerant,
         requires_req_count=requires_req,
         tools=reports,
-        server_info={"name": "claude-code-cli-mcp", "version": "3.4.2"},
+        server_info={"name": "claude-code-cli-mcp", "version": __version__},
         summary=f"{len(reports)} tools inspected: {tolerant} tolerant to args={{}}, {requires_req} still require `req` wrapper",
     )
 
