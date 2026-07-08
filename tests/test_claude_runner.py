@@ -239,3 +239,44 @@ def test_build_child_env_always_includes_hardening():
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in env_perm
     assert "CLAUDE_CODE_DISABLE_CRON" not in env_perm
     assert "CLAUDE_CODE_DISABLE_TERMINAL_TITLE" not in env_perm
+
+
+def test_stdin_set_to_none_after_finally(monkeypatch):
+    """Regression test for commit 87933e5: proc.stdin must be set to None
+    in the finally block, not just closed. Otherwise FastMCP wrapper re-reads
+    the closed stream and returns parse_error: 'Expecting value'.
+    """
+    from unittest.mock import MagicMock, patch
+    from claude_code_mcp.claude_runner import start_sync_run
+    from claude_code_mcp.models import ClaudeRunTaskRequest
+    from claude_code_mcp.settings import Settings
+
+    # Create a mock stdin that we can verify is set to None
+    mock_stdin = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.stdin = mock_stdin
+    # Simulate that Popen returns this mocked process
+    mock_proc.pid = 12345
+
+    req = ClaudeRunTaskRequest(
+        workspace_path=".",
+        prompt="hello",
+    )
+    settings = Settings()
+
+    # Mock the subprocess.Popen call
+    with patch("subprocess.Popen", return_value=mock_proc):
+        result = start_sync_run(
+            claude_path="claude",
+            workspace_path=".",
+            request=req,
+            settings=settings,
+        )
+
+    # The critical assertion: stdin was set to None in finally
+    assert mock_proc.stdin is None, (
+        "REGRESSION: proc.stdin was not set to None in finally block. "
+        "This will cause FastMCP to re-read a closed stdin stream and "
+        "return parse_error: 'Expecting value'."
+    )
+

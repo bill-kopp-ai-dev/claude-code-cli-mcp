@@ -307,3 +307,31 @@ def test_async_start_poll_cancel_flow(monkeypatch, tmp_path):
         time.sleep(0.1)
 
     assert False, "Task did not cancel within timeout"
+
+
+def test_haiku_allowed_in_default_allowlist():
+    from claude_code_mcp.settings import Settings
+    settings = Settings()
+    assert "haiku" in settings.allowed_models
+
+
+def test_fable_allowed_in_default_allowlist():
+    from claude_code_mcp.settings import Settings
+    settings = Settings()
+    assert "fable" in settings.allowed_models
+
+
+@pytest.mark.parametrize("model_alias", ["sonnet", "fable", "opus", "haiku"])
+def test_all_four_models_in_default_allowlist(model_alias):
+    from claude_code_mcp.settings import Settings
+    settings = Settings()
+    assert model_alias in settings.allowed_models
+
+
+def test_higher_priority_model_emits_warning():
+    from claude_code_mcp.timeout_policy import compute_timeout
+    from claude_code_mcp.models import MODEL_REGISTRY, TaskClass
+    rec = compute_timeout(TaskClass.MULTI_FILE_REFACTOR, MODEL_REGISTRY["haiku"], files_to_edit=50)
+    assert rec.warning is not None
+    assert "não é recomendado para tarefas que alteram múltiplos arquivos" in rec.warning
+
