@@ -1,9 +1,131 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from enum import Enum
+from typing import Annotated, Any, Dict, List, Literal, Set
 
 from pydantic import BaseModel, BeforeValidator, Field, StrictBool
+
+
+class TaskClass(str, Enum):
+    """Classificação das tarefas submetidas para fins de alocação de tempo e orçamentos."""
+    TRIVIAL_EDIT = "trivial_edit"               # Alterações em 1 arquivo, tempo de execução < 90s.
+    SMOKE_TEST = "smoke_test"                    # Validações estáticas de código, pytest sem escrita.
+    SINGLE_FEATURE = "single_feature"            # Implementação de funcionalidade simples em 1-3 arquivos.
+    DOCS_UPDATE = "docs_update"                  # Edição de arquivos de documentação (.md, .rst).
+    TEST_SUITE = "test_suite"                    # Geração de suite de testes unitários ou de integração.
+    REVIEW = "review"                            # Revisão estática de conformidade e linting.
+    MULTI_FILE_REFACTOR = "multi_file_refactor"  # Refatorações estruturais abrangendo 5 a 50 arquivos.
+    ARCHITECTURE = "architecture"                # Decisões de design de sistemas e modelagem.
+    MIGRATION = "migration"                      # Migrações massivas de dependências ou pacotes.
+    LONG_RUNNING_DATA_AGENT = "long_running"     # Agentes de processamento contínuo em background.
+
+
+class ModelTier(str, Enum):
+    """Classificação tarifária dos modelos Claude para tomada de decisão financeira."""
+    CHEAP = "cheap"             # Claude Haiku 4.5 — Baixo custo e velocidade.
+    STANDARD = "standard"       # Claude Sonnet 5 — Modelo padrão equilibrado.
+    MID_TIER = "mid_tier"       # Claude Fable 5 — Modelo intermediário.
+    FLAGSHIP = "flagship"       # Claude Opus 4.8 — Modelo de alto raciocínio analítico.
+
+
+class ModelProfile(BaseModel):
+    """Perfil detalhado contendo capacidades, custos e limites de um modelo Claude específico."""
+    cli_string: str = Field(..., description="String identificadora enviada para o executável claude.")
+    alias: str = Field(..., description="Apelido curto e legível (ex: sonnet, haiku).")
+    tier: ModelTier = Field(..., description="Categoria de preço associada ao modelo.")
+    display_name: str = Field(..., description="Nome de exibição em logs e relatórios.")
+    best_for: List[TaskClass] = Field(..., description="Classes de tarefas recomendadas para o modelo.")
+    typical_latency_min: float = Field(..., description="Latência média observada por execução típica.")
+    typical_cost_per_run_usd: float = Field(..., description="Custo médio estimado por run.")
+    multi_file_safe: bool = Field(..., description="Indica se é recomendado para escrita de múltiplos arquivos.")
+    max_context_k_tokens: int = Field(200, description="Tamanho de janela de contexto em milhares de tokens.")
+
+
+# Registro estático contendo os perfis dos 4 modelos homologados
+MODEL_REGISTRY: Dict[str, ModelProfile] = {
+    "sonnet": ModelProfile(
+        cli_string="claude-sonnet-5-2026",
+        alias="sonnet",
+        tier=ModelTier.STANDARD,
+        display_name="Claude Sonnet 5",
+        best_for=[
+            TaskClass.SINGLE_FEATURE,
+            TaskClass.DOCS_UPDATE,
+            TaskClass.MULTI_FILE_REFACTOR,
+            TaskClass.TEST_SUITE
+        ],
+        typical_latency_min=8.0,
+        typical_cost_per_run_usd=0.50,
+        multi_file_safe=True,
+        max_context_k_tokens=400,
+    ),
+    "fable": ModelProfile(
+        cli_string="claude-fable-5-2026",
+        alias="fable",
+        tier=ModelTier.MID_TIER,
+        display_name="Claude Fable 5",
+        best_for=[
+            TaskClass.MULTI_FILE_REFACTOR,
+            TaskClass.MIGRATION,
+            TaskClass.LONG_RUNNING_DATA_AGENT
+        ],
+        typical_latency_min=12.0,
+        typical_cost_per_run_usd=0.30,
+        multi_file_safe=True,
+        max_context_k_tokens=400,
+    ),
+    "opus": ModelProfile(
+        cli_string="claude-opus-4-8-2026",
+        alias="opus",
+        tier=ModelTier.FLAGSHIP,
+        display_name="Claude Opus 4.8",
+        best_for=[
+            TaskClass.ARCHITECTURE,
+            TaskClass.MIGRATION,
+            TaskClass.LONG_RUNNING_DATA_AGENT
+        ],
+        typical_latency_min=25.0,
+        typical_cost_per_run_usd=1.50,
+        multi_file_safe=True,
+        max_context_k_tokens=1000,
+    ),
+    "haiku": ModelProfile(
+        cli_string="claude-haiku-4-5-2026",
+        alias="haiku",
+        tier=ModelTier.CHEAP,
+        display_name="Claude Haiku 4.5",
+        best_for=[
+            TaskClass.TRIVIAL_EDIT,
+            TaskClass.SMOKE_TEST,
+            TaskClass.REVIEW
+        ],
+        typical_latency_min=1.5,
+        typical_cost_per_run_usd=0.02,
+        multi_file_safe=False,
+        max_context_k_tokens=200,
+    ),
+}
+
+
+def resolve_model_alias(alias: str) -> str:
+    """Resolve um apelido curto de modelo (ex: 'haiku') para sua correspondente cli_string."""
+    try:
+        profile = MODEL_REGISTRY[alias.lower()]
+        return profile.cli_string
+    except KeyError as e:
+        raise KeyError(
+            f"O apelido de modelo '{alias}' não é suportado pelo servidor MCP. "
+            f"Modelos válidos: {list(MODEL_REGISTRY.keys())}"
+        ) from e
+
+
+def is_model_allowed(alias: str, allowed_models: Set[str]) -> bool:
+    """Verifica se o apelido fornecido está presente na lista de permitidos do servidor."""
+    if not allowed_models:
+        return alias.lower() in MODEL_REGISTRY
+    return alias.lower() in {m.lower() for m in allowed_models}
+
 
 
 def _coerce_empty_str_to_dict(v: Any) -> Any:
@@ -229,7 +351,7 @@ class ClaudeUpdatePersistenceResponse(BaseModel):
 
 class ClaudeLoadPersistenceContextRequest(BaseModel):
     include: list[PersistenceFileName] = Field(
-        default_factory=lambda: ["agents", "projects", "memory"]
+        default_factory=lambda: ["agents", "projects", "memory"]  # type: ignore[arg-type]
     )
     max_chars_per_file: int = 20_000
 
