@@ -986,6 +986,118 @@ def prompt_model_selection_guidance() -> str:
     )
 
 
+@mcp.prompt(name=prompt_name("timeout_help"))
+def prompt_timeout_help(
+    task_class: str = "single_feature",
+    files_to_edit: int = 1,
+    model_alias: str = "sonnet",
+) -> str:
+    """Decision matrix for picking the right timeout + sync/async per task.
+
+    Parameters
+    ----------
+    task_class : str
+        One of the TaskClass enum values: trivial_edit, smoke_test,
+        single_feature, docs_update, test_suite, review,
+        multi_file_refactor, architecture, migration, long_running.
+    files_to_edit : int
+        Estimated number of files the task will modify. Used to bump
+        timeout up for refactor-style tasks.
+    model_alias : str
+        Short alias of the target model: sonnet, fable, opus, haiku.
+        Resolved via MODEL_REGISTRY.
+
+    The prompt returns a structured guide that the orchestrator
+    (Femto or similar) can read to pick the right timeout_s and
+    whether to use claude_run_task (sync) or claude_start_task (async).
+    """
+    from claude_code_mcp.models import MODEL_REGISTRY, TaskClass
+    from claude_code_mcp.timeout_policy import (
+        SYNC_CEILING_S, ASYNC_CEILING_S, compute_timeout,
+    )
+
+    # Normalize inputs
+    tc = task_class.lower().strip()
+    fa = model_alias.lower().strip()
+
+    # Build the matrix string (Table-driven — same data the policy uses)
+    matrix = "\n".join(
+        f"| {member.value:<24} | {compute_timeout(member, MODEL_REGISTRY['sonnet'], files_to_edit=5).timeout_s:>5}s | "
+        f"{compute_timeout(member, MODEL_REGISTRY['sonnet'], files_to_edit=5).must_use_async!s:<5} |"
+        for member in TaskClass
+    )
+
+    # Look up the specific recommendation
+    try:
+        profile = MODEL_REGISTRY[fa]
+    except KeyError:
+        return (
+            f"ERROR: unknown model_alias='{fa}'. Valid aliases: "
+            f"{sorted(MODEL_REGISTRY.keys())}"
+        )
+
+    try:
+        task_enum = TaskClass(tc)
+    except ValueError:
+        return (
+            f"ERROR: unknown task_class='{tc}'. Valid values: "
+            f"{[m.value for m in TaskClass]}"
+        )
+
+    rec = compute_timeout(task_enum, profile, files_to_edit=files_to_edit)
+
+    return (
+        f"## Timeout recommendation\n"
+        f"\n"
+        f"- task_class: {task_enum.value}\n"
+        f"- model_alias: {profile.alias} (tier={profile.tier.value}, "
+        f"display={profile.display_name})\n"
+        f"- files_to_edit: {files_to_edit}\n"
+        f"\n"
+        f"Recommended values:\n"
+        f"- `timeout_s`: **{rec.timeout_s}**\n"
+        f"- `must_use_async`: **{rec.must_use_async}**\n"
+        f"- warning: {rec.warning or '(none)'}\n"
+        f"\n"
+        f"## How to call\n"
+        f"\n"
+        f"```python\n"
+        f"{'await ' if rec.must_use_async else ''}claude_{'start_task' if rec.must_use_async else 'run_task'}(\n"
+        f"    req={{'prompt': '...', 'model': '{profile.alias}', 'timeout_s': {rec.timeout_s}}}\n"
+        f")\n"
+        f"```\n"
+        f"\n"
+        f"## Decision matrix (default, files_to_edit=5, sonnet)\n"
+        f"\n"
+        f"| task_class              | timeout | async |\n"
+        f"|-------------------------|---------|-------|\n"
+        f"{matrix}\n"
+        f"\n"
+        f"## Reference constants\n"
+        f"\n"
+        f"- SYNC_CEILING_S = {SYNC_CEILING_S} (FastMCP sync wrapper hard cap)\n"
+        f"- ASYNC_CEILING_S = {ASYNC_CEILING_S} (Pydantic validator upper bound)\n"
+        f"\n"
+        f"## Rules\n"
+        f"\n"
+        f"- Use `claude_run_task` (sync) ONLY if `timeout_s <= {SYNC_CEILING_S}`.\n"
+        f"- Use `claude_start_task` (async) + `claude_poll_task` if `timeout_s > {SYNC_CEILING_S}`.\n"
+        f"- For tasks that touch ≥50 files, expect `timeout_s >= 1800` (async mandatory).\n"
+        f"- For tasks that touch ≥100 files or are 'architecture'/'migration' class, "
+        f"expect `timeout_s` near the {ASYNC_CEILING_S}s ceiling.\n"
+        f"- `haiku` is `multi_file_safe=False`: avoid for >5 file edits "
+        f"(compute_timeout emits a warning).\n"
+        f"\n"
+        f"## Model registry\n"
+        f"\n"
+        + "\n".join(
+            f"- **{a}** (tier={p.tier.value}, ~${p.typical_cost_per_run_usd:.2f}/run, "
+            f"latency={p.typical_latency_min:.1f}min, multi_file_safe={p.multi_file_safe})"
+            for a, p in MODEL_REGISTRY.items()
+        )
+    )
+
+
 @mcp.prompt(name=prompt_name("security_and_workspace_rules"))
 def prompt_security_and_workspace_rules() -> str:
     """Safety rules and workspace constraints for orchestrators."""
