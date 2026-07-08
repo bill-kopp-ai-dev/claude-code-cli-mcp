@@ -6,7 +6,6 @@ import importlib
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from claude_code_mcp.changes import git_changed_files, is_git_repo
 from claude_code_mcp.settings import Settings

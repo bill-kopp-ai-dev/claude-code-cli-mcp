@@ -1,4 +1,3 @@
-import pytest
 from claude_code_mcp.server import prompt_timeout_help
 from claude_code_mcp.models import TaskClass
 

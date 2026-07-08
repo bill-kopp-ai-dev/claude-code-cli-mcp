@@ -1,8 +1,5 @@
 from __future__ import annotations
 import json
-import os
-import re
-import signal
 import subprocess
 import sys
 import threading
@@ -21,11 +18,10 @@ if str(_SRC_ROOT) not in sys.path:
 from claude_code_mcp.changes import (
     diff_snapshots, git_changed_files, git_diff, is_git_repo, snapshot_tree,
 )
-from claude_code_mcp.claude_args import build_claude_argv, build_child_env
 from claude_code_mcp.claude_runner import (
     ClaudeRun, start_async_run, start_sync_run, terminate_run, wait_sync,
 )
-from claude_code_mcp.claude_stream import ClaudeStreamParser, RollingLineBuffer
+from claude_code_mcp.claude_stream import ClaudeStreamParser
 from claude_code_mcp.logfire_setup import setup_logfire
 from claude_code_mcp.models import (
     ClaudeAppendPersistenceRequest, ClaudeAppendPersistenceRequestIn,

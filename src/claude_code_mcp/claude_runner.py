@@ -6,7 +6,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Any
+from typing import Any
 
 from claude_code_mcp.claude_args import build_claude_argv, build_child_env
 from claude_code_mcp.claude_stream import ClaudeStreamParser

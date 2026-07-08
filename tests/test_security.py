@@ -6,7 +6,6 @@ import importlib
 import subprocess
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 import threading
 
@@ -18,7 +17,6 @@ from claude_code_mcp.models import (
     ClaudeStartTaskRequest,
     ClaudePollTaskRequest,
     ClaudeCancelTaskRequest,
-    ClaudeExecOptions,
 )
 from claude_code_mcp.settings import Settings
 

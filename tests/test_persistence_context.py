@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
 
 from claude_code_mcp.persistence import (
     PersistenceStore,
