@@ -258,6 +258,85 @@ Common model aliases include:
 
 You can also specify full names like `claude-sonnet-4-6`. If `CLAUDE_MCP_ALLOWED_MODELS` is configured (default: `{"sonnet", "opus"}`), any requested model must reside in that set, otherwise a `MODEL_NOT_ALLOWED` error is raised. If `CLAUDE_MCP_ALLOWED_MODELS` is an empty set, validation is skipped.
 
+## Model Registry & Timeout Policy
+
+This section formalizes the model registry and task-class-aware timeout policy.
+
+## Model Registry
+
+The MCP server exposes 4 Claude model aliases via `MODEL_REGISTRY`
+(`claude_code_mcp.models`):
+
+| Alias    | CLI string (default, override via env) | Tier     | Cost     | multi_file_safe |
+|----------|---------------------------------------|----------|----------|-----------------|
+| `sonnet` | `claude-sonnet-5-...`                  | standard | ~$0.50   | true            |
+| `fable`  | `claude-fable-5-...`                   | mid_tier | ~$0.30   | true            |
+| `opus`   | `claude-opus-4-8-...`                  | flagship | ~$1.50   | true            |
+| `haiku`  | `claude-haiku-4-5-...`                 | cheap    | ~$0.02   | false           |
+
+Default `Settings.allowed_models = {sonnet, fable, opus, haiku}` —
+previously `{sonnet, opus}` only. Fable and Haiku are now first-class.
+
+## Task Class Taxonomy
+
+`TaskClass` enum (10 values) classifies work by complexity:
+
+- `trivial_edit`, `smoke_test`, `review` — sub-3-minute, sync only
+- `single_feature`, `docs_update`, `test_suite` — sub-6-minute, sync only
+- `multi_file_refactor` — variable; sync if ≤600s, async otherwise
+- `architecture`, `migration` — always async, 1500-1800s typical
+- `long_running` — always async, 3600s ceiling
+
+## Timeout Policy Helper
+
+`compute_timeout(task_class, model_profile, files_to_edit=1,
+max_budget_usd=None) -> TimeoutRecommendation` is exported as a
+public helper. Returns `(timeout_s, must_use_async, warning)`.
+
+Constants:
+- `SYNC_CEILING_S = 600` (FastMCP wrapper hard cap)
+- `ASYNC_CEILING_S = 3600` (Pydantic validator upper bound)
+
+Auto-bumps `timeout_s` based on `files_to_edit`:
+- ≥5 files → ≥600s
+- ≥20 files → ≥900s
+- ≥50 files → ≥1800s
+
+## Decision Matrix (files_to_edit=5, default)
+
+| Task class                | timeout_s | must_use_async |
+|---------------------------|-----------|----------------|
+| trivial_edit              | 180       | false          |
+| smoke_test                | 120       | false          |
+| single_feature            | 300       | false          |
+| docs_update               | 240       | false          |
+| test_suite                | 360       | false          |
+| review                    | 180       | false          |
+| multi_file_refactor       | 600       | false          |
+| architecture              | 1800      | true           |
+| migration                 | 1500      | true           |
+| long_running              | 3600      | true           |
+
+## MCP Prompt: claude_timeout_help
+
+`prompt_timeout_help(task_class, files_to_edit, model_alias)` returns
+a structured guide with:
+- Recommended (timeout_s, must_use_async) for the requested triple
+- Pre-formatted python snippet (claude_run_task vs claude_start_task)
+- Full decision matrix
+- SYNC_CEILING_S / ASYNC_CEILING_S reference
+- Sync/async routing rules
+- Model registry listing
+
+## Settings additions (this sprint)
+
+- `claude_model_alias_default: str = "sonnet"`
+- `claude_model_aliases: dict[str, str]` (4 entries, env-overridable)
+- `timeout_policy_enabled: bool = False` (feature flag, OFF default)
+- `timeout_policy_default_max_s: int = 3600`
+- `timeout_policy_floor_s: int = 60`
+- `allowed_models` default updated to `{sonnet, fable, opus, haiku}`
+
 ---
 
 ## Security Configuration

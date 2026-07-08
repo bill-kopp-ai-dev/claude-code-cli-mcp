@@ -314,6 +314,97 @@ Both fields are validated against the `CLAUDE_MCP_ALLOWED_MODELS` allowlist. Whe
 
 For deeper guidance on choosing models and aliases, see the `claude_model_selection_guidance` prompt.
 
+## Model Selection & Timeout Policy
+
+As of sprint N+1 (commits 3a90258..1f07117), this MCP server supports
+4 Claude models and a task-class-aware timeout policy. Both features
+are backward-compatible additions.
+
+### Supported models
+
+| Alias    | Tier     | Typical cost | Latency  | Multi-file safe |
+|----------|----------|--------------|----------|-----------------|
+| `sonnet` | standard | ~$0.50/run   | ~8 min   | ✅              |
+| `fable`  | mid_tier | ~$0.30/run   | ~12 min  | ✅              |
+| `opus`   | flagship | ~$1.50/run   | ~25 min  | ✅              |
+| `haiku`  | cheap    | ~$0.02/run   | ~1.5 min | ❌ (>5 files)   |
+
+The CLI strings live in `Settings.claude_model_aliases` and are
+overridable via env vars (`CLAUDE_MCP_CLAUDE_MODEL_ALIASES__SONNET`,
+etc). Default values are placeholders (`claude-sonnet-5-...`) — set
+these to your installed `claude --list-models` output before
+relying on a specific alias.
+
+### Timeout policy
+
+Each task has a complexity class (`TaskClass` enum, 10 values:
+`trivial_edit`, `smoke_test`, `single_feature`, `docs_update`,
+`test_suite`, `review`, `multi_file_refactor`, `architecture`,
+`migration`, `long_running`). The helper
+`claude_code_mcp.timeout_policy.compute_timeout(task_class, model,
+files_to_edit, max_budget_usd)` returns a `(timeout_s, must_use_async)`
+recommendation.
+
+**Sync ceiling: 600s** (FastMCP wrapper hard cap).
+**Async ceiling: 3600s** (Pydantic validator upper bound).
+
+| Task class                  | Default timeout | Sync/Async         |
+|-----------------------------|-----------------|--------------------|
+| `smoke_test`                | 120s            | Sync               |
+| `trivial_edit`, `review`    | 180s            | Sync               |
+| `docs_update`               | 240s            | Sync               |
+| `single_feature`            | 300s            | Sync               |
+| `test_suite`                | 360s            | Sync               |
+| `multi_file_refactor` (S)   | 600s            | Sync               |
+| `multi_file_refactor` (M)   | 900s            | Async              |
+| `multi_file_refactor` (L)   | 1500s           | Async              |
+| `architecture`              | 1800s           | Async              |
+| `migration`                 | 1500s           | Async              |
+| `long_running`              | 3600s           | Async              |
+
+The `compute_timeout` helper bumps these up automatically based on
+`files_to_edit` (≥20 files → ≥900s, ≥50 files → ≥1800s) and warns
+when Haiku is used on >5 files.
+
+### Using the decision matrix
+
+Orchestrators can call the MCP prompt `prompt_timeout_help` (name
+`claude_timeout_help`) to get a structured recommendation:
+
+```python
+# In your orchestrator
+from claude_code_mcp.server import prompt_timeout_help
+
+guide = prompt_timeout_help(
+    task_class="multi_file_refactor",
+    files_to_edit=20,
+    model_alias="sonnet",
+)
+# Returns: timeout_s=900, must_use_async=True, plus the full
+# decision matrix and code snippet.
+```
+
+Or directly use the helper:
+
+```python
+from claude_code_mcp.models import MODEL_REGISTRY, TaskClass
+from claude_code_mcp.timeout_policy import compute_timeout
+
+profile = MODEL_REGISTRY["sonnet"]
+rec = compute_timeout(TaskClass.MULTI_FILE_REFACTOR, profile, files_to_edit=20)
+if rec.must_use_async:
+    run_id = await claude_start_task(req={"prompt": "...", "timeout_s": rec.timeout_s})
+else:
+    result = claude_run_task(req={"prompt": "...", "timeout_s": rec.timeout_s})
+```
+
+### Feature flag
+
+The new types are always available, but the policy helper is gated
+behind `CLAUDE_MCP_TIMEOUT_POLICY_ENABLED=false` (default OFF) for
+safe rollout. Set it to `true` in `.env` to enable automatic
+timeout recommendations in your orchestrator's request layer.
+
 ## Security
 
 ### Safe Mode (Default)
