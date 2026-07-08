@@ -5,7 +5,7 @@ description = "MCP server that exposes the Claude Code CLI (claude) as tools for
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "fastmcp>=3.0.0",
+  "fastmcp>=3.4.3",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.2.0",
   "loguru>=0.7.0",
