@@ -22,10 +22,33 @@ with the following Claude-specific adaptations:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal, TYPE_CHECKING
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+if TYPE_CHECKING:
+    AllowedModelsType = set[str]
+else:
+    AllowedModelsType = Any
+
+
+def _parse_comma_separated_set(v: Any) -> Any:
+    if isinstance(v, str):
+        v = v.strip()
+        if not v:
+            return set()
+        if v.startswith("[") and v.endswith("]"):
+            import json
+            try:
+                val = json.loads(v)
+                if isinstance(val, list):
+                    return set(val)
+            except Exception:
+                pass
+        return {x.strip() for x in v.split(",") if x.strip()}
+    return v
 
 
 class Settings(BaseSettings):
@@ -66,7 +89,23 @@ class Settings(BaseSettings):
     snapshot_max_file_bytes: int = 512_000
 
     # ---- Allowlists (permissive mode) ----
-    allowed_models: set[str] = Field(default_factory=lambda: {"sonnet", "opus"})
+    allowed_models: Annotated[AllowedModelsType, BeforeValidator(_parse_comma_separated_set)] = Field(
+        default_factory=lambda: {"sonnet", "fable", "opus", "haiku"}
+    )
+
+    # ---- Model Registry & Timeout Policy ----
+    claude_model_alias_default: str = "sonnet"
+    claude_model_aliases: dict[str, str] = Field(
+        default_factory=lambda: {
+            "sonnet": "claude-sonnet-5-2026",
+            "fable": "claude-fable-5-2026",
+            "opus": "claude-opus-4-8-2026",
+            "haiku": "claude-haiku-4-5-2026",
+        }
+    )
+    timeout_policy_enabled: bool = False
+    timeout_policy_default_max_s: int = 3600
+    timeout_policy_floor_s: int = 60
     allow_env_keys: set[str] = Field(default_factory=set)
     allow_extra_args: set[str] = Field(default_factory=set)
 
