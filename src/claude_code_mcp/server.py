@@ -1087,9 +1087,10 @@ def prompt_timeout_help(
     # Build the matrix string using the REQUESTED profile (not always sonnet).
     # Table-driven — same data the policy uses.
     matrix = "\n".join(
-        f"| {member.value:<24} | {compute_timeout(member, profile, files_to_edit=5).timeout_s:>5}s | "
-        f"{compute_timeout(member, profile, files_to_edit=5).must_use_async!s:<5} |"
+        f"| {member.value:<24} | {rec_row.timeout_s:>5}s | "
+        f"{rec_row.must_use_async!s:<5} |"
         for member in TaskClass
+        for rec_row in (compute_timeout(member, profile, files_to_edit=5),)
     )
 
     # Validate task_class (after profile, so unknown model_alias wins on priority)

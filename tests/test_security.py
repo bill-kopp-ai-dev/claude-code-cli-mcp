@@ -333,3 +333,87 @@ def test_higher_priority_model_emits_warning():
     assert rec.warning is not None
     assert "não é recomendado para tarefas que alteram múltiplos arquivos" in rec.warning
 
+
+def test_model_cli_string_accepted_by_allowlist():
+    """Allowlist now resolves both aliases and full CLI strings.
+
+    Regression test for the sprint-N+1 review: previously, passing
+    `model="claude-sonnet-5-2026"` (the cli_string from MODEL_REGISTRY)
+    would raise MODEL_NOT_ALLOWED even though `sonnet` was in
+    `settings.allowed_models`. The fix resolves value -> alias before
+    comparing.
+    """
+    settings = Settings()  # default allowlist includes all 4 aliases
+    req = ClaudeRunTaskRequest(
+        workspace_path=".",
+        prompt="OK",
+        model="claude-sonnet-5-2026",  # full cli_string
+    )
+    argv = build_claude_argv(
+        claude_path="claude",
+        workspace_path=".",
+        request=req,
+        mode="sync",
+        settings=settings,
+    )
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5-2026"
+
+
+def test_fallback_model_cli_string_accepted_by_allowlist():
+    settings = Settings()
+    req = ClaudeRunTaskRequest(
+        workspace_path=".",
+        prompt="OK",
+        fallback_model="claude-haiku-4-5-2026",
+    )
+    argv = build_claude_argv(
+        claude_path="claude",
+        workspace_path=".",
+        request=req,
+        mode="sync",
+        settings=settings,
+    )
+    assert "--fallback-model" in argv
+    assert argv[argv.index("--fallback-model") + 1] == "claude-haiku-4-5-2026"
+
+
+def test_model_unknown_cli_string_rejected():
+    settings = Settings()
+    req = ClaudeRunTaskRequest(
+        workspace_path=".",
+        prompt="OK",
+        model="claude-gpt-9000-fake",
+    )
+    with pytest.raises(ValueError, match="MODEL_NOT_ALLOWED"):
+        build_claude_argv(
+            claude_path="claude",
+            workspace_path=".",
+            request=req,
+            mode="sync",
+            settings=settings,
+        )
+
+
+def test_model_blocked_when_alias_not_in_allowlist():
+    """If an alias is removed from allowed_models, even an alias match fails.
+
+    Uses a custom allowlist that excludes `opus`, and verifies that
+    passing `model="opus"` raises MODEL_NOT_ALLOWED (proves the
+    alias-resolution path actually consults `settings.allowed_models`).
+    """
+    settings = Settings(allowed_models={"sonnet", "haiku"})
+    req = ClaudeRunTaskRequest(
+        workspace_path=".",
+        prompt="OK",
+        model="opus",
+    )
+    with pytest.raises(ValueError, match="MODEL_NOT_ALLOWED"):
+        build_claude_argv(
+            claude_path="claude",
+            workspace_path=".",
+            request=req,
+            mode="sync",
+            settings=settings,
+        )
+

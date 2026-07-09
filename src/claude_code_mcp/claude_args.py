@@ -41,12 +41,36 @@ def build_claude_argv(
         raise ValueError("PERMISSION_MODE_NOT_ALLOWED: auto permission mode is not allowed")
 
     # 3. Model allowlist check (applies to both --model and --fallback-model)
+    # Accepts both aliases ("sonnet") and full CLI strings
+    # ("claude-sonnet-5-2026") because `prompt_model_selection_guidance`
+    # documents both. Resolves to the alias before comparing to
+    # `settings.allowed_models`.
     if settings.allowed_models:
+        from claude_code_mcp.models import MODEL_REGISTRY
         for label, value in (("model", request.model), ("fallback_model", request.fallback_model)):
-            if value and value not in settings.allowed_models:
+            if not value:
+                continue
+            value_lower = value.lower()
+            # 1) If value matches a registry alias, use it directly.
+            # 2) If value matches a registry cli_string, resolve to its alias.
+            # 3) Otherwise it's not a known model at all.
+            if value_lower in MODEL_REGISTRY:
+                resolved_alias = value_lower
+            else:
+                resolved_alias = next(
+                    (alias for alias, profile in MODEL_REGISTRY.items()
+                     if profile.cli_string.lower() == value_lower),
+                    None,
+                )
+                if resolved_alias is None:
+                    raise ValueError(
+                        f"MODEL_NOT_ALLOWED: {label} {value!r} is not a known model "
+                        f"(neither alias nor cli_string). Known: {list(MODEL_REGISTRY.keys())}"
+                    )
+            if resolved_alias not in {m.lower() for m in settings.allowed_models}:
                 raise ValueError(
-                    f"MODEL_NOT_ALLOWED: {label} {value!r} is not in "
-                    f"settings.allowed_models: {settings.allowed_models}"
+                    f"MODEL_NOT_ALLOWED: {label} {value!r} (alias='{resolved_alias}') "
+                    f"is not in settings.allowed_models: {settings.allowed_models}"
                 )
 
     # 4. Build argv

@@ -6,12 +6,15 @@ with the following Claude-specific adaptations:
 - ``agy_path`` -> ``claude_path`` plus a ``claude_path_fallbacks`` list.
 - ``default_permission_mode`` (default ``acceptEdits``) drives the
   ``--permission-mode`` flag when the request does not set one.
-- ``force_bare`` is True by default — ``--bare`` is always passed to the
-  child ``claude`` process to disable workspace customizations.
+- ``force_bare`` defaults to False — ``--bare`` is NOT passed by default so
+  the child ``claude`` process loads ``~/.claude`` credentials (OAuth token
+  in ``~/.claude.json``). Set to True only if you explicitly want to disable
+  workspace customizations.
 - ``max_concurrent_runs`` (default 10) enforces an upper bound on
   in-flight ``claude_start_task`` invocations.
-- ``allowed_models`` is a free-form allowlist (``{"sonnet","opus"}``
-  defaults). Empty set means "any model".
+- ``allowed_models`` is a free-form allowlist
+  (``{"sonnet","fable","opus","haiku"}`` defaults). Empty set means
+  "any model".
 - ``AGY_MCP_*`` env vars renamed to ``CLAUDE_MCP_*``.
 - The Antigravity-specific ``fix_antigravity_mcp_config`` /
   ``antigravity_mcp_config_path`` settings are dropped — ``~/.claude.json``
